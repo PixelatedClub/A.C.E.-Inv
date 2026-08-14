@@ -1,0 +1,11 @@
+*.cmd text eol=crlf
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.pdf binary
+*.pptx binary
+*.ico binary
+*.png binary
+*.gif binary
+*.wav binary

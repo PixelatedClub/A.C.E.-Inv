@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local application data - never commit inventory or cadet records
+portable_data/inventory.db
+portable_data/*.db
+portable_data/*.db-*
+portable_data/backups/
+portable_data/exports/
+portable_data/labels/
+portable_data/logs/
+
+# Build output
+build/
+dist/
+*.spec
+
+# Local release files - upload these through GitHub Releases
+release/*.exe
+release/*.zip
+
+# Temporary and inspection files
+tmp/
+*.inspect.ndjson
+*.log
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

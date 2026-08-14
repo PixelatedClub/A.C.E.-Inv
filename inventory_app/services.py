@@ -1,0 +1,3419 @@
+from __future__ import annotations
+
+import csv
+import hashlib
+import re
+import sqlite3
+import zipfile
+from datetime import datetime, timezone
+from html.parser import HTMLParser
+from io import BytesIO
+from pathlib import Path
+from typing import Any
+from xml.etree import ElementTree as ET
+from xml.sax.saxutils import escape
+
+from PIL import Image
+
+from .barcode_utils import compact_wings_barcode, compose_barcode, normalize_token, open_file, write_label_pdf
+from .config import AppSettings, BASE_DIR
+from .database import EASTER_EGG_ADMINS, EASTER_EGG_CADETS, EASTER_EGG_OUTFIT_HISTORY, InventoryDatabase, utc_now
+from .deployment import create_transfer_installer, ensure_icon_file
+from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
+from .wings_catalog import WINGS_COLUMNS
+
+
+NAME_PATTERN = re.compile(r"^\s*([^,]+?)\s*,\s*([A-Za-z]{1,3})\.?\s*,\s*([^,]+?)\s*$")
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+$")
+MASTER_ADMIN_CODE = "Det005"
+MASTER_ADMIN_ROLE = "CADRE"
+DEFAULT_ADMIN_ROLE = "ADMIN CADET"
+RESERVED_ADMIN_IDS = {int(seed["admin_id"]) for seed in EASTER_EGG_ADMINS}
+RESERVED_CADET_IDS = {int(seed["cadet_id"]) for seed in EASTER_EGG_CADETS}
+EASTER_EGG_BARCODE_IDS = tuple(str(entry["barcode_id"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY)
+EASTER_EGG_CATALOG_VALUES = {
+    "category": {str(entry["category"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
+    "variant": {str(entry["variant"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
+    "item_type": {str(entry["item_type"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
+    "item_name": {str(entry["item_name"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
+}
+EASTER_EGG_EXPORT_PROFILES = [
+    {
+        "ace_name": "Heart",
+        "cadet_id": 1,
+        "trait": "Loyal",
+        "outfit_title": "Regalia of the Steamheart Sovereign",
+        "asset_path": Path(r"D:\Aseprite\palettes\heratcharacter.gif"),
+        "asset_label": "heart_character.png",
+    },
+    {
+        "ace_name": "Spade",
+        "cadet_id": 2,
+        "trait": "Smart",
+        "outfit_title": "Industrial Labor Attire of the Subterranean Worker",
+        "asset_path": Path(r"D:\Aseprite\palettes\spaddes2.png"),
+        "asset_label": "spade_character.png",
+    },
+    {
+        "ace_name": "Clubs",
+        "cadet_id": 3,
+        "trait": "Funny",
+        "outfit_title": "Casual Civilian Streetwear of the Urban Commoner",
+        "asset_path": Path(r"D:\Aseprite\palettes\club2.png"),
+        "asset_label": "clubs_character.png",
+    },
+    {
+        "ace_name": "Diamo",
+        "cadet_id": 4,
+        "trait": "Sweet",
+        "outfit_title": "Administrative Attire of the Metropolitan Governor",
+        "asset_path": Path(r"D:\Aseprite\palettes\Diamo.asse.png"),
+        "asset_label": "diamo_character.png",
+    },
+    {
+        "ace_name": "Devin",
+        "cadet_id": 5,
+        "trait": "Keeper of the Hidden Crew",
+        "outfit_title": "ACE Inventory Dev Outfit",
+        "asset_path": None,
+        "asset_label": "",
+    },
+]
+EASTER_EGG_GROUP_ASSET = {
+    "asset_path": Path(r"D:\Aseprite\palettes\Beholdadoodlelikeyou'veneverseencaring,smart,fun,andtough.png"),
+    "asset_label": "ace_group.png",
+}
+
+
+class InventoryError(Exception):
+    """Raised when a business rule prevents the requested operation."""
+
+
+class _WingsHtmlTableParser(HTMLParser):
+    """Small dependency-free reader for WINGS HTML files exported with an .xls suffix."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag.casefold() == "tr":
+            if self._row:
+                self.rows.append(self._row)
+            self._row = []
+        elif tag.casefold() in {"td", "th"} and self._row is not None:
+            self._cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.casefold()
+        if lowered in {"td", "th"} and self._cell is not None and self._row is not None:
+            self._row.append(" ".join("".join(self._cell).replace("\xa0", " ").split()))
+            self._cell = None
+        elif lowered == "tr" and self._row is not None:
+            if self._row:
+                self.rows.append(self._row)
+            self._row = None
+
+    def close(self) -> None:
+        super().close()
+        if self._row:
+            self.rows.append(self._row)
+            self._row = None
+
+
+class InventoryService:
+    def __init__(self, settings: AppSettings) -> None:
+        self.settings = settings
+        self.database = InventoryDatabase(settings)
+
+    def replace_settings(self, settings: AppSettings) -> None:
+        self.settings = settings
+        self.database.swap_settings(settings)
+
+    def clone_database(self, target_path: Path) -> Path:
+        return self.database.clone_database(target_path)
+
+    def create_manual_backup(self) -> Path:
+        return self.database.create_backup(reason="manual")
+
+    def ensure_app_icon(self, source_png: Path) -> Path:
+        return ensure_icon_file(source_png, self.settings.database_path.parent / "app_icon.ico")
+
+    def authenticate_admin_code(self, code: str) -> dict[str, Any]:
+        normalized_code = code.strip()
+        if not normalized_code:
+            raise InventoryError("Admin code is required.")
+
+        if normalized_code.casefold() == MASTER_ADMIN_CODE.casefold():
+            return {
+                "admin_id": None,
+                "display_name": "CADRE",
+                "role": MASTER_ADMIN_ROLE,
+                "is_master": True,
+                "label": MASTER_ADMIN_ROLE,
+            }
+
+        code_hash = self._hash_admin_code(normalized_code)
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT admin_id, display_name, role
+                FROM admin_codes
+                WHERE code_hash = ? AND is_active = 1
+                """,
+                (code_hash,),
+            ).fetchone()
+        if row is None:
+            raise InventoryError("Admin code not recognized.")
+
+        payload = dict(row)
+        payload["is_master"] = False
+        payload["label"] = f"{payload['role']} {payload['display_name']}".strip()
+        return payload
+
+    def list_admin_codes(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = [
+            {
+                "admin_id": "MASTER",
+                "display_name": "Cadre Administrator",
+                "role": MASTER_ADMIN_ROLE,
+                "is_active": 1,
+                "created_at": "",
+                "updated_at": "",
+                "label": f"{MASTER_ADMIN_ROLE} ({MASTER_ADMIN_CODE})",
+            }
+        ]
+        with self.database.connect() as connection:
+            db_rows = connection.execute(
+                """
+                SELECT admin_id, display_name, role, is_active, created_at, updated_at
+                FROM admin_codes
+                ORDER BY role, display_name
+                """
+            ).fetchall()
+        rows.extend(dict(row) for row in db_rows if not self._is_easter_egg_admin_id(row["admin_id"]))
+        return rows
+
+    def get_admin_code_value(self, *, admin_id: int | str) -> str:
+        if str(admin_id) == "MASTER":
+            return MASTER_ADMIN_CODE
+
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT code_value
+                FROM admin_codes
+                WHERE admin_id = ?
+                """,
+                (int(admin_id),),
+            ).fetchone()
+        if row is None:
+            raise InventoryError("Admin code not found.")
+
+        code_value = str(row["code_value"] or "").strip()
+        if not code_value:
+            raise InventoryError(
+                "This admin code was created before code viewing was enabled. Save or reset that admin code once to make it viewable."
+            )
+        return code_value
+
+    def save_admin_code(self, *, display_name: str, code: str, role: str = DEFAULT_ADMIN_ROLE) -> dict[str, Any]:
+        name = self._smart_title(display_name)
+        if not name:
+            raise InventoryError("Admin name is required.")
+        normalized_code = code.strip()
+        if not normalized_code:
+            raise InventoryError("Admin code is required.")
+        if normalized_code.casefold() == MASTER_ADMIN_CODE.casefold():
+            raise InventoryError("Det005 is reserved as the cadre administrator code.")
+
+        code_hash = self._hash_admin_code(normalized_code)
+        with self.database.connect() as connection:
+            existing = connection.execute(
+                "SELECT admin_id FROM admin_codes WHERE code_hash = ?",
+                (code_hash,),
+            ).fetchone()
+            if existing:
+                connection.execute(
+                    """
+                    UPDATE admin_codes
+                    SET display_name = ?, role = ?, code_value = ?, is_active = 1, updated_at = ?
+                    WHERE admin_id = ?
+                    """,
+                    (name, role, normalized_code, utc_now(), existing["admin_id"]),
+                )
+                admin_id = existing["admin_id"]
+            else:
+                admin_id = self._lowest_available_integer_id(
+                    connection,
+                    table_name="admin_codes",
+                    id_column="admin_id",
+                    reserved_ids=RESERVED_ADMIN_IDS,
+                )
+                cursor = connection.execute(
+                    """
+                    INSERT INTO admin_codes(admin_id, display_name, role, code_hash, code_value, created_at, updated_at, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
+                    (admin_id, name, role, code_hash, normalized_code, utc_now(), utc_now()),
+                )
+            row = connection.execute(
+                """
+                SELECT admin_id, display_name, role, is_active, created_at, updated_at
+                FROM admin_codes
+                WHERE admin_id = ?
+                """,
+                (admin_id,),
+            ).fetchone()
+            connection.commit()
+
+        self.database.note_write()
+        return dict(row)
+
+    def deactivate_admin_code(self, *, admin_id: int) -> None:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT admin_id FROM admin_codes WHERE admin_id = ?", (admin_id,)).fetchone()
+            if row is None:
+                raise InventoryError("Admin code not found.")
+            connection.execute(
+                "UPDATE admin_codes SET is_active = 0, updated_at = ? WHERE admin_id = ?",
+                (utc_now(), admin_id),
+            )
+            connection.commit()
+        self.database.note_write()
+
+    def delete_admin_code(self, *, admin_id: int) -> None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT admin_id FROM admin_codes WHERE admin_id = ?",
+                (admin_id,),
+            ).fetchone()
+            if row is None:
+                raise InventoryError("Admin code not found.")
+
+            connection.execute(
+                """
+                UPDATE transactions
+                SET approved_by_admin_id = NULL
+                WHERE approved_by_admin_id = ?
+                """,
+                (admin_id,),
+            )
+            connection.execute(
+                """
+                UPDATE transactions
+                SET return_approved_by_admin_id = NULL
+                WHERE return_approved_by_admin_id = ?
+                """,
+                (admin_id,),
+            )
+            connection.execute(
+                "DELETE FROM admin_codes WHERE admin_id = ?",
+                (admin_id,),
+            )
+            connection.commit()
+        self.database.note_write()
+
+    def create_transfer_installer(self, *, icon_source: Path | None = None) -> Path:
+        icon_path: Path | None = None
+        if icon_source is not None:
+            resolved_icon = Path(icon_source).expanduser().resolve()
+            if not resolved_icon.exists():
+                raise InventoryError(f"Icon source not found: {resolved_icon}")
+            if resolved_icon.suffix.lower() == ".ico":
+                icon_path = resolved_icon
+            else:
+                icon_path = ensure_icon_file(resolved_icon, self.settings.database_path.parent / "app_icon.ico")
+        else:
+            existing_icon = self.settings.database_path.parent / "app_icon.ico"
+            if existing_icon.exists():
+                icon_path = existing_icon
+
+        installer_path = create_transfer_installer(
+            project_dir=BASE_DIR,
+            database_path=self.settings.database_path,
+            icon_path=icon_path,
+            app_title=self.settings.org_name,
+            backup_interval_ops=self.settings.backup_interval_ops,
+            overdue_days=self.settings.overdue_days,
+        )
+        return installer_path
+
+    def list_catalog_values(self, kind: str) -> list[str]:
+        item_column_map = {
+            "category": "category",
+            "variant": "variant",
+            "item_type": "item_type",
+            "item_name": "item_name",
+        }
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT value FROM catalog_values WHERE kind = ? ORDER BY sort_order, value",
+                (kind,),
+            ).fetchall()
+            visible_item_values: set[str] = set()
+            item_column = item_column_map.get(kind)
+            if item_column:
+                visible_rows = connection.execute(
+                    f"""
+                    SELECT DISTINCT {item_column} AS value
+                    FROM items
+                    WHERE {self._not_in_clause('barcode_id', EASTER_EGG_BARCODE_IDS)}
+                    """,
+                    EASTER_EGG_BARCODE_IDS,
+                ).fetchall()
+                visible_item_values = {
+                    str(row["value"]).strip().upper()
+                    for row in visible_rows
+                    if str(row["value"] or "").strip()
+                }
+        hidden_values = EASTER_EGG_CATALOG_VALUES.get(kind, set())
+        return [
+            row["value"]
+            for row in rows
+            if (
+                str(row["value"]).strip().upper() not in hidden_values
+                or str(row["value"]).strip().upper() in visible_item_values
+            )
+        ]
+
+    def list_custom_index_items(self) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT index_item_id, equipment_name, uniform_system, configuration,
+                       size_system, search_aliases, created_at, updated_at
+                FROM custom_index_items
+                ORDER BY uniform_system, equipment_name
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_wings_catalog(
+        self,
+        *,
+        search: str = "",
+        category: str = "All",
+        sort_by: str = "Item Number",
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = [
+            "NOT EXISTS (SELECT 1 FROM hidden_index_items hidden WHERE hidden.item_no = wings_catalog.item_no)"
+        ]
+        params: list[Any] = []
+        words = [word for word in search.strip().casefold().split() if word]
+        for word in words:
+            searchable_word = str(int(word)) if word.isdigit() else word
+            token = f"%{searchable_word}%"
+            conditions.append(
+                """
+                (
+                    lower(item_no) LIKE ? OR lower(item_name) LIKE ? OR lower(size) LIKE ?
+                    OR lower(category) LIKE ? OR lower(subcategory) LIKE ? OR lower(sex) LIKE ?
+                    OR lower(stock_number) LIKE ? OR lower(uom) LIKE ?
+                )
+                """
+            )
+            params.extend([token] * 8)
+        if category and category != "All":
+            conditions.append("category = ?")
+            params.append(category)
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        order_clause = (
+            "is_wings DESC, CASE WHEN is_wings = 1 THEN CAST(item_no AS INTEGER) END, item_no"
+            if sort_by == "Item Number"
+            else "category, subcategory, item_name, size, item_no"
+        )
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT item_no, item_name, size, category, subcategory, sex,
+                       stock_number, uom, writeoffs, source, is_wings
+                FROM wings_catalog
+                {where_clause}
+                ORDER BY {order_clause}
+                """,
+                params,
+            ).fetchall()
+        catalog_rows = [dict(row) for row in rows]
+        for row in catalog_rows:
+            row["item_no_key"] = row["item_no"]
+            row["item_no"] = self._format_wings_item_no(row["item_no"]) if row["is_wings"] else row["item_no"]
+        return catalog_rows
+
+    def get_wings_catalog_item(self, item_no: str) -> dict[str, Any]:
+        cleaned_item_no = str(item_no).strip()
+        if cleaned_item_no.isdigit():
+            cleaned_item_no = str(int(cleaned_item_no))
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM wings_catalog WHERE item_no = ?",
+                (cleaned_item_no,),
+            ).fetchone()
+        if row is None:
+            raise InventoryError("Select an item from the WINGS catalog first.")
+        return dict(row)
+
+    def add_wings_catalog_item(
+        self,
+        *,
+        item_no: str,
+        item_name: str,
+        size: str,
+        category: str,
+        subcategory: str,
+        sex: str,
+        stock_number: str,
+        uom: str,
+        source: str,
+    ) -> str:
+        raw_item_no = str(item_no).strip()
+        if not raw_item_no.isdigit() or not 1 <= len(raw_item_no) <= 10:
+            raise InventoryError("WINGS item number must contain 1 to 10 digits.")
+        normalized_item_no = str(int(raw_item_no))
+        if normalized_item_no == "0":
+            raise InventoryError("WINGS item number must be greater than zero.")
+
+        cleaned_name = " ".join(str(item_name).split())
+        cleaned_category = " ".join(str(category).split())
+        cleaned_subcategory = " ".join(str(subcategory).split())
+        cleaned_uom = str(uom).strip().upper()
+        cleaned_source = " ".join(str(source).split())
+        if not cleaned_name:
+            raise InventoryError("Item name is required.")
+        if not cleaned_category:
+            raise InventoryError("Category is required.")
+        if not cleaned_subcategory:
+            raise InventoryError("Subcategory is required.")
+        if not cleaned_uom:
+            raise InventoryError("UoM is required.")
+        if not cleaned_source:
+            raise InventoryError("Source is required.")
+
+        cleaned_sex = str(sex).strip().upper()
+        if cleaned_sex not in {"", "M", "F", "U"}:
+            raise InventoryError("Sex must be blank, M, F, or U.")
+        cleaned_stock_number = "".join(str(stock_number).split())
+        if cleaned_stock_number and not cleaned_stock_number.isdigit():
+            raise InventoryError("Stock number must contain digits only.")
+
+        with self.database.connect() as connection:
+            existing = connection.execute(
+                "SELECT item_name FROM wings_catalog WHERE item_no = ?",
+                (normalized_item_no,),
+            ).fetchone()
+            if existing is not None:
+                raise InventoryError(
+                    f"WINGS item {self._format_wings_item_no(normalized_item_no)} already exists as "
+                    f"{existing['item_name']}."
+                )
+            connection.execute(
+                """
+                INSERT INTO wings_catalog(
+                    item_no, item_name, size, category, subcategory, sex,
+                    stock_number, uom, writeoffs, source, is_wings
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Go to Writeoffs', ?, 1)
+                """,
+                (
+                    normalized_item_no,
+                    cleaned_name,
+                    " ".join(str(size).split()),
+                    cleaned_category,
+                    cleaned_subcategory,
+                    cleaned_sex,
+                    cleaned_stock_number,
+                    cleaned_uom,
+                    cleaned_source,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM hidden_index_items WHERE item_no = ?",
+                (normalized_item_no,),
+            )
+            connection.commit()
+
+        self.database.note_write()
+        return self._format_wings_item_no(normalized_item_no)
+
+    def add_custom_catalog_item(
+        self,
+        *,
+        item_name: str,
+        size: str,
+        category: str,
+        subcategory: str,
+        sex: str,
+        stock_number: str,
+        uom: str,
+        source: str,
+    ) -> str:
+        """Add a fully described local item without pretending it has a WINGS item number."""
+        cleaned_name = " ".join(str(item_name).split())
+        cleaned_category = " ".join(str(category).split())
+        cleaned_subcategory = " ".join(str(subcategory).split())
+        cleaned_uom = str(uom).strip().upper()
+        cleaned_source = " ".join(str(source).split()) or "Local Custom Item"
+        if not cleaned_name:
+            raise InventoryError("Item name is required.")
+        if not cleaned_category:
+            raise InventoryError("Category is required.")
+        if not cleaned_subcategory:
+            raise InventoryError("Subcategory is required.")
+        if not cleaned_uom:
+            raise InventoryError("UoM is required.")
+        cleaned_sex = str(sex).strip().upper()
+        if cleaned_sex not in {"", "M", "F", "U"}:
+            raise InventoryError("Sex must be blank, M, F, or U.")
+
+        with self.database.connect() as connection:
+            local_numbers = connection.execute(
+                "SELECT item_no FROM wings_catalog WHERE item_no LIKE 'LOCAL-%'"
+            ).fetchall()
+            next_number = max(
+                (
+                    int(str(row["item_no"]).split("-", 1)[1])
+                    for row in local_numbers
+                    if str(row["item_no"]).split("-", 1)[-1].isdigit()
+                ),
+                default=0,
+            ) + 1
+            item_no = f"LOCAL-{next_number:04d}"
+            connection.execute(
+                """
+                INSERT INTO wings_catalog(
+                    item_no, item_name, size, category, subcategory, sex,
+                    stock_number, uom, writeoffs, source, is_wings
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, 0)
+                """,
+                (
+                    item_no,
+                    cleaned_name,
+                    " ".join(str(size).split()),
+                    cleaned_category,
+                    cleaned_subcategory,
+                    cleaned_sex,
+                    " ".join(str(stock_number).split()),
+                    cleaned_uom,
+                    cleaned_source,
+                ),
+            )
+            connection.commit()
+        self.database.note_write()
+        return item_no
+
+    @staticmethod
+    def _normalize_import_header(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
+
+    @staticmethod
+    def _read_wings_html_rows(path: Path) -> list[list[str]]:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8-sig", errors="replace")
+        parser = _WingsHtmlTableParser()
+        parser.feed(text)
+        parser.close()
+        return parser.rows
+
+    @staticmethod
+    def _read_wings_csv_rows(path: Path) -> list[list[str]]:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8-sig", errors="replace")
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",\t;|")
+        except csv.Error:
+            dialect = csv.excel
+        return [[str(cell).strip() for cell in row] for row in csv.reader(text.splitlines(), dialect)]
+
+    @staticmethod
+    def _read_wings_xlsx_rows(path: Path) -> list[list[str]]:
+        namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+        office_rel = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+        package_rel = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+        with zipfile.ZipFile(path, "r") as archive:
+            shared_strings: list[str] = []
+            if "xl/sharedStrings.xml" in archive.namelist():
+                shared_root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                for item in shared_root.findall(f"{namespace}si"):
+                    shared_strings.append("".join(node.text or "" for node in item.iter(f"{namespace}t")))
+
+            workbook_root = ET.fromstring(archive.read("xl/workbook.xml"))
+            first_sheet = workbook_root.find(f"{namespace}sheets/{namespace}sheet")
+            if first_sheet is None:
+                return []
+            relationship_id = first_sheet.attrib.get(f"{office_rel}id", "")
+            rel_root = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+            target = ""
+            for relationship in rel_root.findall(f"{package_rel}Relationship"):
+                if relationship.attrib.get("Id") == relationship_id:
+                    target = relationship.attrib.get("Target", "")
+                    break
+            if not target:
+                return []
+            sheet_path = target.lstrip("/")
+            if not sheet_path.startswith("xl/"):
+                sheet_path = f"xl/{sheet_path}"
+            sheet_root = ET.fromstring(archive.read(sheet_path))
+            rows: list[list[str]] = []
+            for row_node in sheet_root.findall(f".//{namespace}sheetData/{namespace}row"):
+                values: dict[int, str] = {}
+                for cell in row_node.findall(f"{namespace}c"):
+                    reference = cell.attrib.get("r", "A1")
+                    letters = "".join(character for character in reference if character.isalpha())
+                    column_index = 0
+                    for character in letters.upper():
+                        column_index = column_index * 26 + ord(character) - 64
+                    cell_type = cell.attrib.get("t", "")
+                    value_node = cell.find(f"{namespace}v")
+                    value = value_node.text if value_node is not None and value_node.text is not None else ""
+                    if cell_type == "s" and value.isdigit() and int(value) < len(shared_strings):
+                        value = shared_strings[int(value)]
+                    elif cell_type == "inlineStr":
+                        value = "".join(node.text or "" for node in cell.iter(f"{namespace}t"))
+                    values[column_index] = value.strip()
+                if values:
+                    rows.append([values.get(index, "") for index in range(1, max(values) + 1)])
+            return rows
+
+    def preview_wings_inventory_import(self, path: Path) -> dict[str, Any]:
+        path = Path(path)
+        if not path.exists():
+            raise InventoryError("The selected WINGS report could not be found.")
+        suffix = path.suffix.casefold()
+        try:
+            if suffix in {".xls", ".html", ".htm"}:
+                rows = self._read_wings_html_rows(path)
+            elif suffix in {".csv", ".tsv"}:
+                rows = self._read_wings_csv_rows(path)
+            elif suffix == ".xlsx":
+                rows = self._read_wings_xlsx_rows(path)
+            else:
+                raise InventoryError("Choose a WINGS Excel (.xls or .xlsx) or CSV report.")
+        except (OSError, ValueError, zipfile.BadZipFile, ET.ParseError) as exc:
+            raise InventoryError(f"The selected report could not be read: {exc}") from exc
+
+        header_aliases = {
+            "item_no": {"itemno", "itemnumber", "wingsitemno"},
+            "qty_issued": {"qtyissued", "quantityissued", "issued"},
+            "qty_available": {"qtyavailable", "quantityavailable", "available"},
+            "total": {"totalininventory", "totalinventory", "totalquantity", "total"},
+            "item_name": {"itemname", "name"},
+            "size": {"size"},
+            "category": {"category"},
+            "subcategory": {"subcategory", "subcat"},
+            "sex": {"sex", "gender"},
+            "stock_number": {"stock", "stockno", "stocknumber", "nsn"},
+            "uom": {"uom", "unitofmeasure"},
+            "writeoffs": {"gotowriteoffs", "writeoffs"},
+            "source": {"source"},
+        }
+        header_index = -1
+        columns: dict[str, int] = {}
+        for index, row in enumerate(rows[:30]):
+            normalized = [self._normalize_import_header(cell) for cell in row]
+            candidate: dict[str, int] = {}
+            for field, aliases in header_aliases.items():
+                for column_index, heading in enumerate(normalized):
+                    if heading in aliases:
+                        candidate[field] = column_index
+                        break
+            if {"item_no", "item_name", "total"}.issubset(candidate):
+                header_index = index
+                columns = candidate
+                break
+        if header_index < 0:
+            raise InventoryError(
+                "This file does not look like a WINGS inventory report. Item No, Item Name, and Total in Inventory are required."
+            )
+
+        def cell(row: list[str], field: str) -> str:
+            column_index = columns.get(field)
+            return str(row[column_index]).strip() if column_index is not None and column_index < len(row) else ""
+
+        def quantity(value: str, field_label: str, row_number: int) -> int:
+            cleaned = str(value).replace(",", "").strip()
+            if not cleaned:
+                return 0
+            try:
+                numeric = float(cleaned)
+            except ValueError as exc:
+                raise InventoryError(f"Row {row_number} has an invalid {field_label}: {value}") from exc
+            if numeric < 0 or not numeric.is_integer():
+                raise InventoryError(f"Row {row_number} has an invalid {field_label}: {value}")
+            return int(numeric)
+
+        parsed_rows: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        seen_item_numbers: set[str] = set()
+        default_source = f"WINGS Import - {path.stem}"
+        for row_number, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+            raw_item_no = cell(row, "item_no")
+            if not raw_item_no and not any(str(value).strip() for value in row):
+                continue
+            if not raw_item_no.isdigit() or int(raw_item_no) <= 0:
+                skipped.append(f"Row {row_number}: unsupported item number {raw_item_no or '(blank)'}")
+                continue
+            item_no = str(int(raw_item_no))
+            if item_no in seen_item_numbers:
+                raise InventoryError(f"WINGS item {raw_item_no} appears more than once in the report.")
+            seen_item_numbers.add(item_no)
+            item_name = " ".join(cell(row, "item_name").split())
+            if not item_name:
+                skipped.append(f"Row {row_number}: item {raw_item_no} has no item name")
+                continue
+            total = quantity(cell(row, "total"), "total quantity", row_number)
+            issued = quantity(cell(row, "qty_issued"), "issued quantity", row_number)
+            available_text = cell(row, "qty_available")
+            available = quantity(available_text, "available quantity", row_number) if available_text else total - issued
+            if available < 0 or available > total or issued > total:
+                raise InventoryError(
+                    f"Row {row_number} has inconsistent quantities: issued {issued}, available {available}, total {total}."
+                )
+            if issued + available != total:
+                raise InventoryError(
+                    f"Row {row_number} does not balance: issued {issued} + available {available} does not equal total {total}."
+                )
+            parsed_rows.append(
+                {
+                    "item_no": item_no,
+                    "item_name": item_name,
+                    "size": " ".join(cell(row, "size").split()),
+                    "category": " ".join(cell(row, "category").split()) or "Uncategorized",
+                    "subcategory": " ".join(cell(row, "subcategory").split()) or "Other",
+                    "sex": cell(row, "sex").strip().upper(),
+                    "stock_number": "".join(cell(row, "stock_number").split()),
+                    "uom": cell(row, "uom").strip().upper() or "EA",
+                    "writeoffs": cell(row, "writeoffs") or "Go to Writeoffs",
+                    "source": " ".join(cell(row, "source").split()) or default_source,
+                    "issued": issued,
+                    "available": available,
+                    "total": total,
+                }
+            )
+        if not parsed_rows:
+            raise InventoryError("No valid WINGS inventory rows were found in the selected report.")
+        return {
+            "path": path,
+            "rows": parsed_rows,
+            "row_count": len(parsed_rows),
+            "total_units": sum(row["total"] for row in parsed_rows),
+            "issued_units": sum(row["issued"] for row in parsed_rows),
+            "available_units": sum(row["available"] for row in parsed_rows),
+            "skipped": skipped,
+        }
+
+    def replace_inventory_from_wings_report(self, path: Path) -> dict[str, Any]:
+        preview = self.preview_wings_inventory_import(path)
+        backup_path = self.database.create_backup(reason="before_wings_import")
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute("DELETE FROM transactions")
+            connection.execute("DELETE FROM items")
+            connection.execute("DELETE FROM barcode_sequences")
+            for row in preview["rows"]:
+                connection.execute(
+                    """
+                    INSERT INTO wings_catalog(
+                        item_no, item_name, size, category, subcategory, sex,
+                        stock_number, uom, writeoffs, source, is_wings
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    ON CONFLICT(item_no) DO UPDATE SET
+                        item_name = excluded.item_name,
+                        size = excluded.size,
+                        category = excluded.category,
+                        subcategory = excluded.subcategory,
+                        sex = excluded.sex,
+                        stock_number = excluded.stock_number,
+                        uom = excluded.uom,
+                        writeoffs = excluded.writeoffs,
+                        source = excluded.source,
+                        is_wings = 1
+                    """,
+                    (
+                        row["item_no"], row["item_name"], row["size"], row["category"],
+                        row["subcategory"], row["sex"], row["stock_number"], row["uom"],
+                        row["writeoffs"], row["source"],
+                    ),
+                )
+                connection.execute("DELETE FROM hidden_index_items WHERE item_no = ?", (row["item_no"],))
+                if row["total"] <= 0:
+                    continue
+                barcode_id = compact_wings_barcode(row["item_no"])
+                status = "Available" if row["available"] > 0 else "Checked Out"
+                notes = (
+                    f"Imported from {Path(path).name}. WINGS baseline shows "
+                    f"{row['issued']} issued and {row['available']} available."
+                )
+                connection.execute(
+                    """
+                    INSERT INTO items(
+                        barcode_id, wings_item_no, item_name, category, variant, item_type,
+                        status, notes, total_quantity, available_quantity, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        barcode_id, row["item_no"], row["item_name"], row["category"], row["size"],
+                        row["subcategory"], status, notes, row["total"], row["available"], now, now,
+                    ),
+                )
+                for _ in range(row["issued"]):
+                    connection.execute(
+                        """
+                        INSERT INTO transactions(
+                            barcode_id, cadet_id, cadet_name, cadet_email, checkout_time,
+                            approved_by_name, approved_by_role, approved_at, condition_notes
+                        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            barcode_id,
+                            "WINGS Import - Holder Not Listed",
+                            "wings-import@ace.local",
+                            now,
+                            "WINGS Import",
+                            "SYSTEM",
+                            now,
+                            "Imported issued quantity. The summary report did not identify the individual holder.",
+                        ),
+                    )
+            connection.commit()
+        self.database.note_write()
+        result = {key: value for key, value in preview.items() if key != "rows"}
+        result["backup_path"] = backup_path
+        return result
+
+    def remove_index_entries(
+        self,
+        *,
+        item_nos: list[str],
+        custom_index_ids: list[int],
+    ) -> dict[str, int]:
+        normalized_item_nos: list[str] = []
+        for item_no in item_nos:
+            cleaned = str(item_no).strip()
+            if cleaned.isdigit():
+                cleaned = str(int(cleaned))
+            if cleaned and cleaned not in normalized_item_nos:
+                normalized_item_nos.append(cleaned)
+        normalized_custom_ids = sorted({int(index_id) for index_id in custom_index_ids})
+
+        hidden_count = 0
+        deleted_local_count = 0
+        deleted_custom_count = 0
+        with self.database.connect() as connection:
+            for item_no in normalized_item_nos:
+                local_row = connection.execute(
+                    "SELECT is_wings FROM wings_catalog WHERE item_no = ?",
+                    (item_no,),
+                ).fetchone()
+                if local_row is not None and int(local_row["is_wings"]) == 0:
+                    cursor = connection.execute("DELETE FROM wings_catalog WHERE item_no = ?", (item_no,))
+                    deleted_local_count += max(0, int(cursor.rowcount))
+                    continue
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO hidden_index_items(item_no, hidden_at)
+                    SELECT item_no, ?
+                    FROM wings_catalog
+                    WHERE item_no = ?
+                    """,
+                    (utc_now(), item_no),
+                )
+                hidden_count += max(0, int(cursor.rowcount))
+            if normalized_custom_ids:
+                placeholders = ", ".join("?" for _ in normalized_custom_ids)
+                cursor = connection.execute(
+                    f"DELETE FROM custom_index_items WHERE index_item_id IN ({placeholders})",
+                    normalized_custom_ids,
+                )
+                deleted_custom_count = max(0, int(cursor.rowcount))
+            connection.commit()
+
+        if hidden_count or deleted_local_count or deleted_custom_count:
+            self.database.note_write()
+        return {
+            "hidden": hidden_count,
+            "deleted_local": deleted_local_count,
+            "deleted_custom": deleted_custom_count,
+        }
+
+    def restore_hidden_index_items(self) -> int:
+        with self.database.connect() as connection:
+            cursor = connection.execute("DELETE FROM hidden_index_items")
+            restored_count = max(0, int(cursor.rowcount))
+            connection.commit()
+        if restored_count:
+            self.database.note_write()
+        return restored_count
+
+    def count_hidden_index_items(self) -> int:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS hidden_count FROM hidden_index_items").fetchone()
+        return int(row["hidden_count"])
+
+    def count_wings_catalog_items(self) -> int:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS catalog_count FROM wings_catalog WHERE is_wings = 1"
+            ).fetchone()
+        return int(row["catalog_count"])
+
+    @staticmethod
+    def _format_wings_item_no(item_no: str) -> str:
+        cleaned = str(item_no).strip()
+        return cleaned.zfill(10) if cleaned.isdigit() else cleaned
+
+    def save_custom_index_item(
+        self,
+        *,
+        equipment_name: str,
+        uniform_system: str,
+        configuration: str,
+        size_system: str,
+        search_aliases: str = "",
+        index_item_id: int | None = None,
+    ) -> int:
+        name = " ".join(equipment_name.split())
+        if not name:
+            raise InventoryError("Equipment name is required.")
+        system = uniform_system.strip().upper()
+        allowed_systems = {"BLUES", "OCP", "PTG", "CADET RANK", "ACCOUTREMENTS", "OUTERWEAR", "FOOTWEAR", "OTHER"}
+        if system not in allowed_systems:
+            raise InventoryError("Select a valid uniform or equipment system.")
+        config_map = {"standard": "Standard", "men's": "Men's", "mens": "Men's", "women's": "Women's", "womens": "Women's", "unisex": "Unisex"}
+        config = config_map.get(configuration.strip().casefold(), "")
+        if not config:
+            raise InventoryError("Configuration must be Standard, Men's, Women's, or Unisex.")
+        sizing = size_system.strip() or "Apparel Size"
+        allowed_sizes = {
+            "Apparel Size", "OCP Garment Size", "Women's OCP Garment Size",
+            "Unisex OCP Garment Size", "Women's Garment Size", "Shoe Size",
+            "Coat Size", "Waist × Inseam", "Neck × Sleeve", "Headgear Size", "One Size",
+        }
+        if sizing not in allowed_sizes:
+            raise InventoryError("Select a valid size system.")
+        aliases = ", ".join(part.strip() for part in search_aliases.split(",") if part.strip())
+        now = utc_now()
+        with self.database.connect() as connection:
+            try:
+                if index_item_id is None:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO custom_index_items(
+                            equipment_name, uniform_system, configuration, size_system,
+                            search_aliases, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (name, system, config, sizing, aliases, now, now),
+                    )
+                    saved_id = int(cursor.lastrowid)
+                else:
+                    cursor = connection.execute(
+                        """
+                        UPDATE custom_index_items
+                        SET equipment_name = ?, uniform_system = ?, configuration = ?,
+                            size_system = ?, search_aliases = ?, updated_at = ?
+                        WHERE index_item_id = ?
+                        """,
+                        (name, system, config, sizing, aliases, now, int(index_item_id)),
+                    )
+                    if cursor.rowcount == 0:
+                        raise InventoryError("That custom Index item no longer exists.")
+                    saved_id = int(index_item_id)
+                connection.commit()
+            except sqlite3.IntegrityError as exc:
+                raise InventoryError("An Index item with that equipment name already exists.") from exc
+        self.database.note_write()
+        return saved_id
+
+    def delete_custom_index_item(self, index_item_id: int) -> None:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM custom_index_items WHERE index_item_id = ?",
+                (int(index_item_id),),
+            )
+            if cursor.rowcount == 0:
+                raise InventoryError("That custom Index item no longer exists.")
+            connection.commit()
+        self.database.note_write()
+
+    def dashboard_summary(self) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            barcode_placeholders = ", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)
+            barcode_params = list(EASTER_EGG_BARCODE_IDS)
+            cadet_placeholders = ", ".join("?" for _ in RESERVED_CADET_IDS)
+            cadet_params = sorted(RESERVED_CADET_IDS)
+            inventory = connection.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS sku_count,
+                    COALESCE(SUM(total_quantity), 0) AS total_units,
+                    COALESCE(SUM(available_quantity), 0) AS available_units,
+                    COALESCE(SUM(
+                        CASE
+                            WHEN status NOT IN ('Lost', 'Retired') THEN total_quantity - available_quantity
+                            ELSE 0
+                        END
+                    ), 0) AS checked_out_units,
+                    SUM(CASE WHEN status = 'Lost' THEN 1 ELSE 0 END) AS lost_rows,
+                    SUM(CASE WHEN status = 'Retired' THEN 1 ELSE 0 END) AS retired_rows
+                FROM items
+                WHERE barcode_id NOT IN ({barcode_placeholders})
+                """,
+                barcode_params,
+            ).fetchone()
+            recent_activity = connection.execute(
+                f"""
+                SELECT *
+                FROM (
+                    SELECT
+                        checkout_time AS event_time,
+                        'Checkout' AS action,
+                        barcode_id,
+                        cadet_name,
+                        cadet_email
+                    FROM transactions
+                    UNION ALL
+                    SELECT
+                        return_time AS event_time,
+                        'Return' AS action,
+                        barcode_id,
+                        cadet_name,
+                        cadet_email
+                    FROM transactions
+                    WHERE return_time IS NOT NULL
+                ) activity
+                LEFT JOIN items ON items.barcode_id = activity.barcode_id
+                WHERE activity.barcode_id NOT IN ({barcode_placeholders})
+                ORDER BY event_time DESC
+                LIMIT 12
+                """,
+                barcode_params,
+            ).fetchall()
+            cadet_count = connection.execute(
+                f"SELECT COUNT(*) AS cadet_count FROM cadets WHERE cadet_id NOT IN ({cadet_placeholders})",
+                cadet_params,
+            ).fetchone()
+        return {
+            "sku_count": inventory["sku_count"],
+            "total_units": inventory["total_units"],
+            "available_units": inventory["available_units"],
+            "checked_out_units": inventory["checked_out_units"],
+            "lost_rows": inventory["lost_rows"] or 0,
+            "retired_rows": inventory["retired_rows"] or 0,
+            "cadet_count": cadet_count["cadet_count"],
+            "recent_activity": [dict(row) for row in recent_activity],
+        }
+
+    def list_items(self, *, search: str = "", status_filter: str = "All") -> list[dict[str, Any]]:
+        conditions: list[str] = [self._not_in_clause("barcode_id", EASTER_EGG_BARCODE_IDS)]
+        params: list[Any] = list(EASTER_EGG_BARCODE_IDS)
+
+        if search.strip():
+            search_text = f"%{search.strip()}%"
+            conditions.append(
+                """
+                (
+                    barcode_id LIKE ?
+                    OR item_name LIKE ?
+                    OR category LIKE ?
+                    OR variant LIKE ?
+                    OR item_type LIKE ?
+                    OR notes LIKE ?
+                )
+                """
+            )
+            params.extend([search_text] * 6)
+
+        if status_filter and status_filter != "All":
+            conditions.append("status = ?")
+            params.append(status_filter)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"""
+            SELECT
+                barcode_id,
+                item_name,
+                category,
+                variant,
+                item_type,
+                status,
+                total_quantity,
+                available_quantity,
+                notes,
+                created_at,
+                updated_at
+            FROM items
+            {where_clause}
+            ORDER BY category, item_type, variant, barcode_id
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_label_records(self, *, search: str = "", status_filter: str = "All") -> list[dict[str, Any]]:
+        return self.list_items(search=search, status_filter=status_filter)
+
+    def preview_generated_barcode(
+        self,
+        *,
+        category: str,
+        variant: str,
+        item_type: str,
+        item_name: str = "",
+        wings_item_no: str = "",
+    ) -> dict[str, Any]:
+        wings_record: dict[str, Any] | None = None
+        if str(wings_item_no).strip():
+            wings_record = self.get_wings_catalog_item(wings_item_no)
+            wings_item_no = str(wings_record["item_no"])
+            category = str(wings_record["category"])
+            variant = str(wings_record["size"])
+            item_type = str(wings_record["subcategory"])
+            item_name = str(wings_record["item_name"])
+        category = self._clean_lookup(category, "Category")
+        variant = self._clean_lookup(variant, "Variant")
+        item_type = self._clean_lookup(item_type, "Item type")
+        item_name = self._clean_item_name(item_name) or self._suggest_item_name(category, variant, item_type)
+
+        with self.database.connect() as connection:
+            existing = self._find_matching_item(
+                connection,
+                category=category,
+                variant=variant,
+                item_type=item_type,
+                item_name=item_name,
+                wings_item_no=str(wings_item_no).strip(),
+            )
+            if existing is not None:
+                payload = dict(existing)
+                payload["action"] = "restock"
+                payload["summary"] = (
+                    f"Existing barcode {payload['barcode_id']} will be reused for this inventory line."
+                )
+                return payload
+
+            barcode_id = self._next_barcode_for_prefix(connection, category=category, variant=variant, item_type=item_type)
+            return {
+                "barcode_id": barcode_id,
+                "item_name": item_name,
+                "category": category,
+                "variant": variant,
+                "item_type": item_type,
+                "total_quantity": 0,
+                "available_quantity": 0,
+                "status": "New",
+                "action": "create",
+                "summary": f"New barcode {barcode_id} will be created for this inventory line.",
+                "wings_item_no": str(wings_item_no).strip(),
+            }
+
+    def save_generated_barcode(
+        self,
+        *,
+        category: str,
+        variant: str,
+        item_type: str,
+        units_per_barcode: int,
+        item_name: str = "",
+        notes: str = "",
+        wings_item_no: str = "",
+    ) -> dict[str, Any]:
+        units_per_barcode = self._validate_quantity(units_per_barcode, field_name="Units per barcode")
+        preview = self.preview_generated_barcode(
+            category=category,
+            variant=variant,
+            item_type=item_type,
+            item_name=item_name,
+            wings_item_no=wings_item_no,
+        )
+
+        with self.database.connect() as connection:
+            if preview["action"] == "restock":
+                item = connection.execute(
+                    "SELECT * FROM items WHERE barcode_id = ?",
+                    (preview["barcode_id"],),
+                ).fetchone()
+                if item is None:
+                    raise InventoryError("Existing barcode could not be loaded for restock.")
+                merged_notes = self._append_note(item["notes"], notes)
+                connection.execute(
+                    """
+                    UPDATE items
+                    SET
+                        item_name = ?,
+                        wings_item_no = ?,
+                        total_quantity = total_quantity + ?,
+                        available_quantity = available_quantity + ?,
+                        notes = ?,
+                        updated_at = ?
+                    WHERE barcode_id = ?
+                    """,
+                    (
+                        preview["item_name"],
+                        preview.get("wings_item_no") or wings_item_no or None,
+                        units_per_barcode,
+                        units_per_barcode,
+                        merged_notes,
+                        utc_now(),
+                        preview["barcode_id"],
+                    ),
+                )
+                self._record_catalog_values(
+                    connection,
+                    preview["category"],
+                    preview["variant"],
+                    preview["item_type"],
+                    preview["item_name"],
+                )
+                self._sync_item_state(connection, preview["barcode_id"])
+                row = connection.execute("SELECT * FROM items WHERE barcode_id = ?", (preview["barcode_id"],)).fetchone()
+                connection.commit()
+                action = "restocked"
+            else:
+                now = utc_now()
+                connection.execute(
+                    """
+                    INSERT INTO items(
+                        barcode_id, wings_item_no, item_name, category, variant, item_type, status,
+                        notes, total_quantity, available_quantity, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'Available', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        preview["barcode_id"],
+                        preview.get("wings_item_no") or wings_item_no or None,
+                        preview["item_name"],
+                        preview["category"],
+                        preview["variant"],
+                        preview["item_type"],
+                        notes.strip(),
+                        units_per_barcode,
+                        units_per_barcode,
+                        now,
+                        now,
+                    ),
+                )
+                prefix = "ACE-SHORT"
+                barcode_text = str(preview["barcode_id"])
+                sequence_number = (
+                    int(barcode_text[1:])
+                    if barcode_text.startswith("A") and barcode_text[1:].isdigit()
+                    else int(barcode_text.split("-")[-1])
+                )
+                connection.execute(
+                    """
+                    INSERT INTO barcode_sequences(prefix, last_number)
+                    VALUES (?, ?)
+                    ON CONFLICT(prefix) DO UPDATE SET last_number = MAX(last_number, excluded.last_number)
+                    """,
+                    (prefix, sequence_number),
+                )
+                self._record_catalog_values(
+                    connection,
+                    preview["category"],
+                    preview["variant"],
+                    preview["item_type"],
+                    preview["item_name"],
+                )
+                row = connection.execute("SELECT * FROM items WHERE barcode_id = ?", (preview["barcode_id"],)).fetchone()
+                connection.commit()
+                action = "created"
+
+        self.database.note_write()
+        payload = dict(row)
+        payload["action"] = action
+        return payload
+
+    def export_label_book(
+        self,
+        *,
+        search: str = "",
+        status_filter: str = "All",
+        barcode_ids: list[str] | None = None,
+        barcode_quantities: dict[str, int] | None = None,
+        filename_stem: str = "all_inventory_labels",
+        open_after: bool = True,
+    ) -> Path:
+        if barcode_ids:
+            records = self._fetch_label_records_by_barcode_ids(barcode_ids)
+        else:
+            records = self.list_label_records(search=search, status_filter=status_filter)
+        if barcode_quantities:
+            records = self._expand_label_records(
+                records,
+                barcode_quantities=barcode_quantities,
+                barcode_order=barcode_ids or [str(record["barcode_id"]) for record in records],
+            )
+        if not records:
+            raise InventoryError("No barcode records matched the current label export filter.")
+
+        safe_stem = normalize_token(filename_stem, fallback="LABELS").lower()
+        pdf_path = self.settings.label_dir / f"{safe_stem}.pdf"
+        write_label_pdf(pdf_path, records, self.settings.org_name, title=f"{self.settings.org_name} Labels")
+        if open_after:
+            open_file(pdf_path)
+        return pdf_path
+
+    def get_item(self, barcode_id: str) -> dict[str, Any] | None:
+        cleaned_barcode = barcode_id.strip().upper()
+        if self._is_easter_egg_barcode(cleaned_barcode):
+            return None
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = ?",
+                (cleaned_barcode,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_barcode_context(self, barcode_id: str) -> dict[str, Any]:
+        cleaned_barcode = barcode_id.strip().upper()
+        if self._is_easter_egg_barcode(cleaned_barcode):
+            raise InventoryError("Barcode not found in inventory.")
+        with self.database.connect() as connection:
+            item = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = ?",
+                (cleaned_barcode,),
+            ).fetchone()
+            open_transactions = connection.execute(
+                """
+                SELECT
+                    transaction_id,
+                    cadet_name,
+                    cadet_email,
+                    checkout_time,
+                    approved_by_name,
+                    approved_by_role,
+                    condition_notes
+                FROM transactions
+                WHERE barcode_id = ? AND return_time IS NULL
+                ORDER BY checkout_time
+                """,
+                (cleaned_barcode,),
+            ).fetchall()
+
+        if item is None:
+            raise InventoryError("Barcode not found in inventory.")
+
+        payload = dict(item)
+        payload["open_transactions"] = [dict(row) for row in open_transactions]
+        return payload
+
+    def create_manual_item(
+        self,
+        *,
+        barcode_id: str,
+        item_name: str,
+        category: str,
+        variant: str,
+        item_type: str,
+        quantity: int,
+        notes: str = "",
+    ) -> str:
+        barcode = barcode_id.strip().upper()
+        if not barcode:
+            raise InventoryError("Barcode is required.")
+        quantity = self._validate_quantity(quantity)
+        category = self._clean_lookup(category, "Category")
+        variant = self._clean_lookup(variant, "Variant")
+        item_type = self._clean_lookup(item_type, "Item type")
+        item_name = self._clean_item_name(item_name) or self._suggest_item_name(category, variant, item_type)
+
+        with self.database.connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM items WHERE barcode_id = ?",
+                (barcode,),
+            ).fetchone()
+            if exists:
+                raise InventoryError("That barcode already exists. Restock it instead of creating a duplicate.")
+
+            now = utc_now()
+            connection.execute(
+                """
+                INSERT INTO items(
+                    barcode_id, item_name, category, variant, item_type, status,
+                    notes, total_quantity, available_quantity, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'Available', ?, ?, ?, ?, ?)
+                """,
+                (barcode, item_name, category, variant, item_type, notes.strip(), quantity, quantity, now, now),
+            )
+            self._record_catalog_values(connection, category, variant, item_type, item_name)
+            connection.commit()
+
+        self.database.note_write()
+        return barcode
+
+    def restock_item(self, *, barcode_id: str, quantity: int, notes: str = "") -> None:
+        barcode = barcode_id.strip().upper()
+        quantity = self._validate_quantity(quantity)
+
+        with self.database.connect() as connection:
+            item = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = ?",
+                (barcode,),
+            ).fetchone()
+            if item is None:
+                raise InventoryError("Barcode not found. Create the item first.")
+            if item["status"] in {"Retired", "Lost"}:
+                raise InventoryError("Reactivate the item before restocking a retired or lost barcode.")
+
+            merged_notes = self._append_note(item["notes"], notes)
+            connection.execute(
+                """
+                UPDATE items
+                SET
+                    total_quantity = total_quantity + ?,
+                    available_quantity = available_quantity + ?,
+                    notes = ?,
+                    updated_at = ?
+                WHERE barcode_id = ?
+                """,
+                (quantity, quantity, merged_notes, utc_now(), barcode),
+            )
+            self._sync_item_state(connection, barcode)
+            connection.commit()
+
+        self.database.note_write()
+
+    def set_item_status(self, *, barcode_id: str, status: str, notes: str = "") -> None:
+        barcode = barcode_id.strip().upper()
+        if status not in {"Available", "Retired", "Lost"}:
+            raise InventoryError("Only Available, Retired, or Lost can be set manually.")
+
+        with self.database.connect() as connection:
+            item = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = ?",
+                (barcode,),
+            ).fetchone()
+            if item is None:
+                raise InventoryError("Barcode not found.")
+
+            open_units = self._open_checkout_count(connection, barcode)
+            if status in {"Retired", "Lost"} and open_units > 0:
+                raise InventoryError("All checked-out units must be returned before retiring or marking an item lost.")
+
+            merged_notes = self._append_note(item["notes"], notes)
+            if status == "Available":
+                connection.execute(
+                    """
+                    UPDATE items
+                    SET notes = ?, updated_at = ?, available_quantity = total_quantity, status = 'Available'
+                    WHERE barcode_id = ?
+                    """,
+                    (merged_notes, utc_now(), barcode),
+                )
+                self._sync_item_state(connection, barcode)
+            else:
+                connection.execute(
+                    """
+                    UPDATE items
+                    SET notes = ?, updated_at = ?, available_quantity = 0, status = ?
+                    WHERE barcode_id = ?
+                    """,
+                    (merged_notes, utc_now(), status, barcode),
+                )
+            connection.commit()
+
+        self.database.note_write()
+
+    def delete_item(self, *, barcode_id: str) -> None:
+        barcode = barcode_id.strip().upper()
+        if not barcode:
+            raise InventoryError("Barcode is required.")
+
+        with self.database.connect() as connection:
+            item = connection.execute("SELECT 1 FROM items WHERE barcode_id = ?", (barcode,)).fetchone()
+            if item is None:
+                raise InventoryError("Barcode not found.")
+
+            connection.execute("DELETE FROM transactions WHERE barcode_id = ?", (barcode,))
+            connection.execute("DELETE FROM items WHERE barcode_id = ?", (barcode,))
+            connection.commit()
+
+        self.database.note_write()
+
+    def generate_barcodes(
+        self,
+        *,
+        category: str,
+        variant: str,
+        item_type: str,
+        label_count: int,
+        units_per_barcode: int,
+        item_name: str = "",
+        notes: str = "",
+        open_after: bool = True,
+    ) -> dict[str, Any]:
+        label_count = self._validate_quantity(label_count, field_name="Barcode count")
+        units_per_barcode = self._validate_quantity(units_per_barcode, field_name="Units per barcode")
+        category = self._clean_lookup(category, "Category")
+        variant = self._clean_lookup(variant, "Variant")
+        item_type = self._clean_lookup(item_type, "Item type")
+        item_name = self._clean_item_name(item_name) or self._suggest_item_name(category, variant, item_type)
+        prefix = "ACE-SHORT"
+        created_records: list[dict[str, Any]] = []
+
+        with self.database.connect() as connection:
+            last_number_row = connection.execute(
+                "SELECT last_number FROM barcode_sequences WHERE prefix = ?",
+                (prefix,),
+            ).fetchone()
+            sequence_number = last_number_row["last_number"] + 1 if last_number_row else 1
+
+            for _ in range(label_count):
+                barcode_id = compose_barcode(category, variant, item_type, sequence_number)
+                while connection.execute(
+                    "SELECT 1 FROM items WHERE barcode_id = ?",
+                    (barcode_id,),
+                ).fetchone():
+                    sequence_number += 1
+                    barcode_id = compose_barcode(category, variant, item_type, sequence_number)
+
+                now = utc_now()
+                connection.execute(
+                    """
+                    INSERT INTO items(
+                        barcode_id, item_name, category, variant, item_type, status,
+                        notes, total_quantity, available_quantity, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, 'Available', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        barcode_id,
+                        item_name,
+                        category,
+                        variant,
+                        item_type,
+                        notes.strip(),
+                        units_per_barcode,
+                        units_per_barcode,
+                        now,
+                        now,
+                    ),
+                )
+                created_records.append(
+                    {
+                        "barcode_id": barcode_id,
+                        "item_name": item_name,
+                        "category": category,
+                        "variant": variant,
+                        "item_type": item_type,
+                        "total_quantity": units_per_barcode,
+                        "status": "Available",
+                    }
+                )
+                sequence_number += 1
+
+            connection.execute(
+                """
+                INSERT INTO barcode_sequences(prefix, last_number)
+                VALUES (?, ?)
+                ON CONFLICT(prefix) DO UPDATE SET last_number = excluded.last_number
+                """,
+                (prefix, sequence_number - 1),
+            )
+            self._record_catalog_values(connection, category, variant, item_type, item_name)
+            connection.commit()
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        batch_pdf_path = self.settings.label_dir / f"label_batch_{timestamp}.pdf"
+        write_label_pdf(
+            batch_pdf_path,
+            created_records,
+            self.settings.org_name,
+            title=f"{self.settings.org_name} Batch Labels",
+        )
+        master_pdf_path = self.export_label_book(open_after=False)
+
+        if open_after:
+            open_file(batch_pdf_path)
+
+        self.database.note_write()
+        return {
+            "records": created_records,
+            "batch_pdf_path": batch_pdf_path,
+            "master_pdf_path": master_pdf_path,
+        }
+
+    def save_cadet(self, *, cadet_name: str, cadet_email: str) -> dict[str, Any]:
+        name, email = self._validate_cadet_identity(cadet_name, cadet_email)
+        with self.database.connect() as connection:
+            cadet = self._upsert_cadet(connection, name, email)
+            connection.execute(
+                """
+                UPDATE transactions
+                SET cadet_id = ?
+                WHERE cadet_id IS NULL AND lower(cadet_email) = lower(?)
+                """,
+                (cadet["cadet_id"], email),
+            )
+            connection.commit()
+
+        self.database.note_write()
+        return cadet
+
+    def update_cadet(self, *, cadet_id: int, cadet_name: str, cadet_email: str) -> dict[str, Any]:
+        name, email = self._validate_cadet_identity(cadet_name, cadet_email)
+        with self.database.connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT cadet_id, full_name, email, created_at, updated_at
+                FROM cadets
+                WHERE cadet_id = ?
+                """,
+                (cadet_id,),
+            ).fetchone()
+            if existing is None:
+                raise InventoryError("Saved cadet record not found.")
+
+            duplicate = connection.execute(
+                """
+                SELECT cadet_id
+                FROM cadets
+                WHERE lower(email) = lower(?) AND cadet_id <> ?
+                """,
+                (email, cadet_id),
+            ).fetchone()
+            if duplicate is not None:
+                raise InventoryError("Another saved cadet already uses that email address.")
+
+            previous_email = str(existing["email"] or "")
+            connection.execute(
+                """
+                UPDATE cadets
+                SET full_name = ?, email = ?, updated_at = ?
+                WHERE cadet_id = ?
+                """,
+                (name, email, utc_now(), cadet_id),
+            )
+            connection.execute(
+                """
+                UPDATE transactions
+                SET cadet_id = ?
+                WHERE cadet_id IS NULL
+                  AND (lower(cadet_email) = lower(?) OR lower(cadet_email) = lower(?))
+                """,
+                (cadet_id, previous_email, email),
+            )
+            row = connection.execute(
+                """
+                SELECT cadet_id, full_name, email, created_at, updated_at
+                FROM cadets
+                WHERE cadet_id = ?
+                """,
+                (cadet_id,),
+            ).fetchone()
+            connection.commit()
+
+        self.database.note_write()
+        return dict(row)
+
+    def list_cadets(self, *, search: str = "") -> list[dict[str, Any]]:
+        conditions = [self._not_in_clause("c.cadet_id", sorted(RESERVED_CADET_IDS))]
+        params: list[Any] = []
+        params.extend(sorted(RESERVED_CADET_IDS))
+        if search.strip():
+            search_text = f"%{search.strip().lower()}%"
+            conditions.append("(lower(full_name) LIKE ? OR lower(email) LIKE ?)")
+            params.extend([search_text, search_text])
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"""
+            SELECT
+                c.cadet_id,
+                c.full_name,
+                c.email,
+                c.created_at,
+                c.updated_at,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM transactions t
+                    WHERE
+                        (t.cadet_id = c.cadet_id OR (t.cadet_id IS NULL AND lower(t.cadet_email) = lower(c.email)))
+                        AND t.return_time IS NULL
+                ), 0) AS open_items,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM transactions t
+                    WHERE t.cadet_id = c.cadet_id OR (t.cadet_id IS NULL AND lower(t.cadet_email) = lower(c.email))
+                ), 0) AS total_transactions,
+                (
+                    SELECT MAX(t.checkout_time)
+                    FROM transactions t
+                    WHERE t.cadet_id = c.cadet_id OR (t.cadet_id IS NULL AND lower(t.cadet_email) = lower(c.email))
+                ) AS last_checkout_time
+            FROM cadets c
+            {where_clause}
+            ORDER BY c.full_name, c.email
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_cadet_details(self, cadet_id: int) -> dict[str, Any]:
+        if self._is_easter_egg_cadet_id(cadet_id):
+            raise InventoryError("Saved cadet record not found.")
+        barcode_placeholders = ", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)
+        with self.database.connect() as connection:
+            cadet = connection.execute(
+                "SELECT cadet_id, full_name, email, created_at, updated_at FROM cadets WHERE cadet_id = ?",
+                (cadet_id,),
+            ).fetchone()
+            if cadet is None:
+                raise InventoryError("Saved cadet record not found.")
+
+            current_items = connection.execute(
+                f"""
+                SELECT
+                    t.transaction_id,
+                    t.barcode_id,
+                    i.item_name,
+                    i.category,
+                    i.variant,
+                    i.item_type,
+                    t.checkout_time,
+                    t.approved_by_name,
+                    t.approved_by_role,
+                    t.condition_notes
+                FROM transactions t
+                JOIN items i ON i.barcode_id = t.barcode_id
+                WHERE
+                    (t.cadet_id = ? OR (t.cadet_id IS NULL AND lower(t.cadet_email) = lower(?)))
+                    AND t.return_time IS NULL
+                    AND t.barcode_id NOT IN ({barcode_placeholders})
+                ORDER BY t.checkout_time DESC, t.transaction_id DESC
+                """,
+                (cadet_id, cadet["email"], *EASTER_EGG_BARCODE_IDS),
+            ).fetchall()
+            history = connection.execute(
+                f"""
+                SELECT
+                    t.transaction_id,
+                    t.barcode_id,
+                    i.item_name,
+                    t.checkout_time,
+                    t.return_time,
+                    t.approved_by_name,
+                    t.approved_by_role,
+                    t.return_approved_by_name,
+                    t.return_approved_by_role,
+                    t.condition_notes
+                FROM transactions t
+                JOIN items i ON i.barcode_id = t.barcode_id
+                WHERE (t.cadet_id = ? OR (t.cadet_id IS NULL AND lower(t.cadet_email) = lower(?)))
+                  AND t.barcode_id NOT IN ({barcode_placeholders})
+                ORDER BY t.checkout_time DESC, t.transaction_id DESC
+                """,
+                (cadet_id, cadet["email"], *EASTER_EGG_BARCODE_IDS),
+            ).fetchall()
+
+        return {
+            "cadet": dict(cadet),
+            "current_items": [dict(row) for row in current_items],
+            "history": [dict(row) for row in history],
+        }
+
+    def delete_cadet(self, *, cadet_id: int) -> None:
+        with self.database.connect() as connection:
+            cadet = connection.execute(
+                "SELECT cadet_id, full_name, email FROM cadets WHERE cadet_id = ?",
+                (cadet_id,),
+            ).fetchone()
+            if cadet is None:
+                raise InventoryError("Saved cadet record not found.")
+
+            connection.execute(
+                "UPDATE transactions SET cadet_id = NULL WHERE cadet_id = ?",
+                (cadet_id,),
+            )
+            connection.execute(
+                "DELETE FROM cadets WHERE cadet_id = ?",
+                (cadet_id,),
+            )
+            connection.commit()
+
+        self.database.note_write()
+
+    def checkout_item(
+        self,
+        *,
+        barcode_id: str,
+        cadet_name: str,
+        cadet_email: str,
+        quantity: int,
+        approved_by: dict[str, Any] | None = None,
+        condition_notes: str = "",
+    ) -> None:
+        barcode = barcode_id.strip().upper()
+        quantity = self._validate_quantity(quantity)
+        cadet_name, cadet_email = self._validate_cadet_identity(cadet_name, cadet_email)
+        approval = self._normalize_admin_identity(approved_by)
+
+        with self.database.connect() as connection:
+            item = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = ?",
+                (barcode,),
+            ).fetchone()
+            if item is None:
+                raise InventoryError("Barcode not found in inventory.")
+            if item["status"] in {"Retired", "Lost"}:
+                raise InventoryError(f"{item['status']} items cannot be checked out.")
+            if item["available_quantity"] < quantity:
+                raise InventoryError("Checkout would drive inventory negative. Reduce the quantity or restock first.")
+
+            cadet = self._upsert_cadet(connection, cadet_name, cadet_email)
+            for _ in range(quantity):
+                connection.execute(
+                    """
+                    INSERT INTO transactions(
+                        barcode_id, cadet_id, cadet_name, cadet_email, checkout_time,
+                        approved_by_admin_id, approved_by_name, approved_by_role, approved_at, condition_notes
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        barcode,
+                        cadet["cadet_id"],
+                        cadet_name,
+                        cadet_email,
+                        utc_now(),
+                        approval["admin_id"],
+                        approval["approved_by_name"],
+                        approval["approved_by_role"],
+                        utc_now(),
+                        condition_notes.strip(),
+                    ),
+                )
+
+            self._sync_item_state(connection, barcode)
+            connection.commit()
+
+        self.database.note_write()
+
+    def checkout_items_bulk(
+        self,
+        *,
+        line_items: list[dict[str, Any]],
+        cadet_name: str,
+        cadet_email: str,
+        approved_by: dict[str, Any] | None = None,
+        condition_notes: str = "",
+    ) -> list[dict[str, Any]]:
+        if not line_items:
+            raise InventoryError("Add at least one barcode to the checkout list first.")
+
+        normalized_name, normalized_email = self._validate_cadet_identity(cadet_name, cadet_email)
+        approval = self._normalize_admin_identity(approved_by)
+        processed_items: list[dict[str, Any]] = []
+
+        with self.database.connect() as connection:
+            cadet = self._upsert_cadet(connection, normalized_name, normalized_email)
+            for line in line_items:
+                barcode = str(line.get("barcode_id", "")).strip().upper()
+                quantity = self._validate_quantity(line.get("quantity", 1))
+                item = connection.execute("SELECT * FROM items WHERE barcode_id = ?", (barcode,)).fetchone()
+                if item is None:
+                    raise InventoryError(f"Barcode {barcode} was not found in inventory.")
+                if item["status"] in {"Retired", "Lost"}:
+                    raise InventoryError(f"{item['status']} items cannot be checked out.")
+                if item["available_quantity"] < quantity:
+                    raise InventoryError(
+                        f"Checkout would drive inventory negative for {barcode}. Reduce the quantity or restock first."
+                    )
+
+                for _ in range(quantity):
+                    connection.execute(
+                        """
+                        INSERT INTO transactions(
+                            barcode_id, cadet_id, cadet_name, cadet_email, checkout_time,
+                            approved_by_admin_id, approved_by_name, approved_by_role, approved_at, condition_notes
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            barcode,
+                            cadet["cadet_id"],
+                            normalized_name,
+                            normalized_email,
+                            utc_now(),
+                            approval["admin_id"],
+                            approval["approved_by_name"],
+                            approval["approved_by_role"],
+                            utc_now(),
+                            condition_notes.strip(),
+                        ),
+                    )
+                self._sync_item_state(connection, barcode)
+                processed_items.append(
+                    {
+                        "barcode_id": barcode,
+                        "item_name": item["item_name"],
+                        "quantity": quantity,
+                    }
+                )
+            connection.commit()
+
+        self.database.note_write()
+        return processed_items
+
+    def return_item(
+        self,
+        *,
+        barcode_id: str,
+        quantity: int,
+        approved_by: dict[str, Any] | None = None,
+        condition_notes: str = "",
+    ) -> list[dict[str, Any]]:
+        barcode = barcode_id.strip().upper()
+        quantity = self._validate_quantity(quantity)
+        approval = self._normalize_admin_identity(approved_by)
+
+        with self.database.connect() as connection:
+            item = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = ?",
+                (barcode,),
+            ).fetchone()
+            if item is None:
+                raise InventoryError("Barcode not found in inventory.")
+
+            open_transactions = connection.execute(
+                """
+                SELECT transaction_id, cadet_name, cadet_email, checkout_time, condition_notes
+                FROM transactions
+                WHERE barcode_id = ? AND return_time IS NULL
+                ORDER BY checkout_time
+                LIMIT ?
+                """,
+                (barcode, quantity),
+            ).fetchall()
+            if len(open_transactions) < quantity:
+                raise InventoryError("There are not enough checked-out units to return that quantity.")
+
+            returned_rows: list[dict[str, Any]] = []
+            for row in open_transactions:
+                connection.execute(
+                    """
+                    UPDATE transactions
+                    SET return_time = ?, return_approved_by_admin_id = ?, return_approved_by_name = ?,
+                        return_approved_by_role = ?, return_approved_at = ?, condition_notes = ?
+                    WHERE transaction_id = ?
+                    """,
+                    (
+                        utc_now(),
+                        approval["admin_id"],
+                        approval["approved_by_name"],
+                        approval["approved_by_role"],
+                        utc_now(),
+                        self._append_note(row["condition_notes"], condition_notes),
+                        row["transaction_id"],
+                    ),
+                )
+                returned_rows.append(dict(row))
+
+            self._sync_item_state(connection, barcode)
+            connection.commit()
+
+        self.database.note_write()
+        return returned_rows
+
+    def return_items_bulk(
+        self,
+        *,
+        line_items: list[dict[str, Any]],
+        approved_by: dict[str, Any] | None = None,
+        condition_notes: str = "",
+    ) -> list[dict[str, Any]]:
+        if not line_items:
+            raise InventoryError("Add at least one barcode to the return list first.")
+
+        approval = self._normalize_admin_identity(approved_by)
+        returned_rows: list[dict[str, Any]] = []
+
+        with self.database.connect() as connection:
+            for line in line_items:
+                barcode = str(line.get("barcode_id", "")).strip().upper()
+                quantity = self._validate_quantity(line.get("quantity", 1))
+                item = connection.execute("SELECT * FROM items WHERE barcode_id = ?", (barcode,)).fetchone()
+                if item is None:
+                    raise InventoryError(f"Barcode {barcode} was not found in inventory.")
+
+                open_transactions = connection.execute(
+                    """
+                    SELECT transaction_id, cadet_name, cadet_email, checkout_time, condition_notes
+                    FROM transactions
+                    WHERE barcode_id = ? AND return_time IS NULL
+                    ORDER BY checkout_time
+                    LIMIT ?
+                    """,
+                    (barcode, quantity),
+                ).fetchall()
+                if len(open_transactions) < quantity:
+                    raise InventoryError(f"There are not enough checked-out units to return for {barcode}.")
+
+                for row in open_transactions:
+                    connection.execute(
+                        """
+                        UPDATE transactions
+                        SET return_time = ?, return_approved_by_admin_id = ?, return_approved_by_name = ?,
+                            return_approved_by_role = ?, return_approved_at = ?, condition_notes = ?
+                        WHERE transaction_id = ?
+                        """,
+                        (
+                            utc_now(),
+                            approval["admin_id"],
+                            approval["approved_by_name"],
+                            approval["approved_by_role"],
+                            utc_now(),
+                            self._append_note(row["condition_notes"], condition_notes),
+                            row["transaction_id"],
+                        ),
+                    )
+                    returned_rows.append(
+                        {
+                            "barcode_id": barcode,
+                            "cadet_name": row["cadet_name"],
+                            "cadet_email": row["cadet_email"],
+                            "checkout_time": row["checkout_time"],
+                        }
+                    )
+                self._sync_item_state(connection, barcode)
+            connection.commit()
+
+        self.database.note_write()
+        return returned_rows
+
+    def get_report(self, report_name: str) -> tuple[list[str], list[dict[str, Any]]]:
+        if report_name == "Checked Out Items":
+            return self._checked_out_report()
+        return self._transaction_history_report()
+
+    def export_rows_to_csv(self, path: Path, columns: list[str], rows: list[dict[str, Any]]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({column: row.get(column, "") for column in columns})
+        return path
+
+    def export_inventory_spreadsheet(self, *, open_after: bool = True) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_dir = self.settings.database_path.parent / "exports"
+        export_path = export_dir / f"WINGS_inventory_{timestamp}.xlsx"
+        rows = self.list_wings_export_rows()
+        self._write_simple_xlsx(
+            export_path,
+            sheet_name="WINGs Inventory",
+            columns=list(WINGS_COLUMNS),
+            rows=rows,
+        )
+        if open_after:
+            open_file(export_path)
+        return export_path
+
+    def list_wings_export_rows(self) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            catalog_rows = connection.execute(
+                """
+                SELECT
+                    catalog.item_no,
+                    catalog.item_name,
+                    catalog.size,
+                    catalog.category,
+                    catalog.subcategory,
+                    catalog.sex,
+                    catalog.stock_number,
+                    catalog.uom,
+                    catalog.writeoffs,
+                    catalog.source,
+                    COALESCE(SUM(items.total_quantity), 0) AS total_quantity,
+                    COALESCE(SUM(items.available_quantity), 0) AS available_quantity
+                FROM wings_catalog AS catalog
+                LEFT JOIN items ON items.wings_item_no = catalog.item_no
+                WHERE catalog.is_wings = 1
+                GROUP BY catalog.item_no
+                HAVING COALESCE(SUM(items.total_quantity), 0) > 0
+                ORDER BY CAST(catalog.item_no AS INTEGER)
+                """
+            ).fetchall()
+        return [
+            {
+                "Item No": self._format_wings_item_no(row["item_no"]),
+                "Qty Issued": int(row["total_quantity"]) - int(row["available_quantity"]),
+                "Qty Available": int(row["available_quantity"]),
+                "Total in Inventory": int(row["total_quantity"]),
+                "Item Name": row["item_name"],
+                "Size": row["size"],
+                "Category": row["category"],
+                "Subcategory": row["subcategory"],
+                "Sex": row["sex"],
+                "Stock #": row["stock_number"],
+                "UoM": row["uom"],
+                "Go to Writeoffs": row["writeoffs"],
+                "Source": row["source"],
+            }
+            for row in catalog_rows
+        ]
+
+    def export_cadet_history_spreadsheet(self, cadet_id: int, *, open_after: bool = True) -> Path:
+        details = self.get_cadet_details(cadet_id)
+        cadet = details["cadet"]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_dir = self.settings.database_path.parent / "exports"
+        cadet_token = self._safe_filename_token(str(cadet["full_name"]), fallback=f"cadet_{cadet_id}")
+        export_path = export_dir / f"cadet_history_{cadet_token}_{timestamp}.xlsx"
+
+        overview_rows = [
+            {
+                "cadet_id": cadet["cadet_id"],
+                "full_name": cadet["full_name"],
+                "email": cadet["email"],
+                "created_at": cadet["created_at"],
+                "updated_at": cadet["updated_at"],
+                "open_items": len(details["current_items"]),
+                "history_entries": len(details["history"]),
+            }
+        ]
+
+        current_rows: list[dict[str, Any]] = []
+        for row in details["current_items"]:
+            enriched_row = dict(row)
+            enriched_row["days_out"] = self._days_between_timestamps(row.get("checkout_time"))
+            current_rows.append(enriched_row)
+
+        history_rows: list[dict[str, Any]] = []
+        for row in details["history"]:
+            enriched_row = dict(row)
+            enriched_row["status"] = "Returned" if row.get("return_time") else "Checked Out"
+            enriched_row["days_out"] = self._days_between_timestamps(
+                row.get("checkout_time"),
+                row.get("return_time"),
+            )
+            history_rows.append(enriched_row)
+
+        self._write_simple_xlsx_workbook(
+            export_path,
+            workbook_title=f"{self.settings.org_name} Cadet History Export",
+            sheets=[
+                {
+                    "sheet_name": "Cadet Overview",
+                    "columns": [
+                        "cadet_id",
+                        "full_name",
+                        "email",
+                        "created_at",
+                        "updated_at",
+                        "open_items",
+                        "history_entries",
+                    ],
+                    "rows": overview_rows,
+                },
+                {
+                    "sheet_name": "Current Items",
+                    "columns": [
+                        "transaction_id",
+                        "barcode_id",
+                        "item_name",
+                        "category",
+                        "variant",
+                        "item_type",
+                        "approved_by_role",
+                        "approved_by_name",
+                        "checkout_time",
+                        "days_out",
+                        "condition_notes",
+                    ],
+                    "rows": current_rows,
+                },
+                {
+                    "sheet_name": "Transaction History",
+                    "columns": [
+                        "transaction_id",
+                        "status",
+                        "barcode_id",
+                        "item_name",
+                        "approved_by_role",
+                        "approved_by_name",
+                        "checkout_time",
+                        "return_time",
+                        "days_out",
+                        "return_approved_by_role",
+                        "return_approved_by_name",
+                        "condition_notes",
+                    ],
+                    "rows": history_rows,
+                },
+            ],
+        )
+        if open_after:
+            open_file(export_path)
+        return export_path
+
+    def export_hidden_easter_egg_spreadsheet(self, *, open_after: bool = True) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_dir = self.settings.database_path.parent / "exports"
+        export_path = export_dir / f"hidden_easter_egg_export_{timestamp}.xlsx"
+        admin_placeholders = ", ".join("?" for _ in sorted(RESERVED_ADMIN_IDS))
+        cadet_placeholders = ", ".join("?" for _ in sorted(RESERVED_CADET_IDS))
+        barcode_placeholders = ", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)
+
+        with self.database.connect() as connection:
+            admin_rows = connection.execute(
+                f"""
+                SELECT admin_id, display_name, role, code_value, is_active, created_at, updated_at
+                FROM admin_codes
+                WHERE admin_id IN ({admin_placeholders})
+                ORDER BY admin_id
+                """,
+                sorted(RESERVED_ADMIN_IDS),
+            ).fetchall()
+            cadet_rows = connection.execute(
+                f"""
+                SELECT cadet_id, full_name, email, created_at, updated_at
+                FROM cadets
+                WHERE cadet_id IN ({cadet_placeholders})
+                ORDER BY cadet_id
+                """,
+                sorted(RESERVED_CADET_IDS),
+            ).fetchall()
+            item_rows = connection.execute(
+                f"""
+                SELECT barcode_id, item_name, category, variant, item_type, status, total_quantity, available_quantity, notes, created_at, updated_at
+                FROM items
+                WHERE barcode_id IN ({barcode_placeholders})
+                ORDER BY barcode_id
+                """,
+                EASTER_EGG_BARCODE_IDS,
+            ).fetchall()
+            transaction_rows = connection.execute(
+                f"""
+                SELECT
+                    transaction_id,
+                    barcode_id,
+                    cadet_id,
+                    cadet_name,
+                    cadet_email,
+                    checkout_time,
+                    approved_by_admin_id,
+                    approved_by_name,
+                    approved_by_role,
+                    approved_at,
+                    return_time,
+                    return_approved_by_admin_id,
+                    return_approved_by_name,
+                    return_approved_by_role,
+                    return_approved_at,
+                    condition_notes
+                FROM transactions
+                WHERE barcode_id IN ({barcode_placeholders})
+                ORDER BY transaction_id
+                """,
+                EASTER_EGG_BARCODE_IDS,
+            ).fetchall()
+
+        # Devin says Heart is loyal, so the private workbook starts with the character roster instead of the raw IDs :D
+        profile_rows, equipment_log_rows, gallery_rows, gallery_images = self._build_hidden_easter_egg_export_views(
+            admin_rows=[dict(row) for row in admin_rows],
+            cadet_rows=[dict(row) for row in cadet_rows],
+            item_rows=[dict(row) for row in item_rows],
+            transaction_rows=[dict(row) for row in transaction_rows],
+        )
+
+        self._write_simple_xlsx_workbook(
+            export_path,
+            workbook_title=f"{self.settings.org_name} Hidden Easter Egg Export",
+            sheets=[
+                {
+                    "sheet_name": "ACE Profiles",
+                    "columns": [
+                        "ace_name",
+                        "trait",
+                        "cadet_name",
+                        "cadet_email",
+                        "admin_name",
+                        "admin_code",
+                        "outfit_title",
+                        "item_name",
+                        "barcode_id",
+                        "checkout_time",
+                        "equipment_log",
+                    ],
+                    "rows": profile_rows,
+                },
+                {
+                    "sheet_name": "Equipment Logs",
+                    "columns": [
+                        "transaction_id",
+                        "ace_name",
+                        "trait",
+                        "cadet_name",
+                        "approved_by_name",
+                        "approved_by_role",
+                        "barcode_id",
+                        "item_name",
+                        "outfit_title",
+                        "checkout_status",
+                        "checkout_time",
+                        "condition_notes",
+                    ],
+                    "rows": equipment_log_rows,
+                },
+                {
+                    "sheet_name": "ACE Gallery",
+                    "columns": ["ace_name", "trait", "outfit_title", "asset_file", "notes"],
+                    "rows": gallery_rows,
+                    "images": gallery_images,
+                },
+                {
+                    "sheet_name": "Hidden Admins",
+                    "columns": ["admin_id", "display_name", "role", "code_value", "is_active", "created_at", "updated_at"],
+                    "rows": [dict(row) for row in admin_rows],
+                },
+                {
+                    "sheet_name": "Hidden Cadets",
+                    "columns": ["cadet_id", "full_name", "email", "created_at", "updated_at"],
+                    "rows": [dict(row) for row in cadet_rows],
+                },
+                {
+                    "sheet_name": "Hidden Items",
+                    "columns": [
+                        "barcode_id",
+                        "item_name",
+                        "category",
+                        "variant",
+                        "item_type",
+                        "status",
+                        "total_quantity",
+                        "available_quantity",
+                        "notes",
+                        "created_at",
+                        "updated_at",
+                    ],
+                    "rows": [dict(row) for row in item_rows],
+                },
+                {
+                    "sheet_name": "Hidden Transactions",
+                    "columns": [
+                        "transaction_id",
+                        "barcode_id",
+                        "cadet_id",
+                        "cadet_name",
+                        "cadet_email",
+                        "checkout_time",
+                        "approved_by_admin_id",
+                        "approved_by_name",
+                        "approved_by_role",
+                        "approved_at",
+                        "return_time",
+                        "return_approved_by_admin_id",
+                        "return_approved_by_name",
+                        "return_approved_by_role",
+                        "return_approved_at",
+                        "condition_notes",
+                    ],
+                    "rows": [dict(row) for row in transaction_rows],
+                },
+            ],
+        )
+        if open_after:
+            open_file(export_path)
+        return export_path
+
+    def _build_hidden_easter_egg_export_views(
+        self,
+        *,
+        admin_rows: list[dict[str, Any]],
+        cadet_rows: list[dict[str, Any]],
+        item_rows: list[dict[str, Any]],
+        transaction_rows: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        admin_map = {int(row["admin_id"]): dict(row) for row in admin_rows}
+        cadet_map = {int(row["cadet_id"]): dict(row) for row in cadet_rows}
+        item_map = {str(row["barcode_id"]).strip().upper(): dict(row) for row in item_rows}
+        transaction_map = {int(row["cadet_id"]): dict(row) for row in transaction_rows}
+
+        profile_rows: list[dict[str, Any]] = []
+        equipment_log_rows: list[dict[str, Any]] = []
+        gallery_rows: list[dict[str, Any]] = []
+        gallery_images: list[dict[str, Any]] = []
+        gallery_row_number = 2
+
+        for profile in EASTER_EGG_EXPORT_PROFILES:
+            cadet = cadet_map.get(int(profile["cadet_id"]))
+            transaction = transaction_map.get(int(profile["cadet_id"]))
+            if cadet is None or transaction is None:
+                continue
+            item = item_map.get(str(transaction["barcode_id"]).strip().upper(), {})
+            admin = admin_map.get(int(transaction.get("approved_by_admin_id") or 0), {})
+            equipment_log = str(item.get("notes") or transaction.get("condition_notes") or "")
+
+            # Devin says Spade is smart, so every hidden row lines up the person, outfit, and checkout trail in one place :D
+            profile_rows.append(
+                {
+                    "ace_name": profile["ace_name"],
+                    "trait": profile["trait"],
+                    "cadet_name": cadet.get("full_name", ""),
+                    "cadet_email": cadet.get("email", ""),
+                    "admin_name": admin.get("display_name", transaction.get("approved_by_name", "")),
+                    "admin_code": admin.get("code_value", ""),
+                    "outfit_title": profile["outfit_title"],
+                    "item_name": item.get("item_name", ""),
+                    "barcode_id": transaction.get("barcode_id", ""),
+                    "checkout_time": transaction.get("checkout_time", ""),
+                    "equipment_log": equipment_log,
+                }
+            )
+            equipment_log_rows.append(
+                {
+                    "transaction_id": transaction.get("transaction_id", ""),
+                    "ace_name": profile["ace_name"],
+                    "trait": profile["trait"],
+                    "cadet_name": cadet.get("full_name", ""),
+                    "approved_by_name": transaction.get("approved_by_name", ""),
+                    "approved_by_role": transaction.get("approved_by_role", ""),
+                    "barcode_id": transaction.get("barcode_id", ""),
+                    "item_name": item.get("item_name", ""),
+                    "outfit_title": profile["outfit_title"],
+                    "checkout_status": "Open Checkout",
+                    "checkout_time": transaction.get("checkout_time", ""),
+                    "condition_notes": equipment_log,
+                }
+            )
+            gallery_rows.append(
+                {
+                    "ace_name": profile["ace_name"],
+                    "trait": profile["trait"],
+                    "outfit_title": profile["outfit_title"],
+                    "asset_file": profile["asset_label"],
+                    "notes": equipment_log,
+                }
+            )
+            if profile.get("asset_path"):
+                # Devin says Diamo is sweet, so the gallery keeps the art close to the outfit notes instead of hiding it in a side folder :D
+                gallery_images.append(
+                    {
+                        "path": profile["asset_path"],
+                        "row": gallery_row_number,
+                        "column": 7,
+                        "max_width_px": 220,
+                        "max_height_px": 260,
+                        "name": profile["asset_label"] or f"{profile['ace_name']}_character.png",
+                    }
+                )
+            for _ in range(7):
+                gallery_rows.append({})
+            gallery_row_number += 8
+
+        group_row = gallery_row_number + 2
+        gallery_rows.append(
+            {
+                "ace_name": "ACE Crew",
+                "trait": "Heart loyal | Spade smart | Clubs funny | Diamo sweet",
+                "outfit_title": "Group Snapshot",
+                "asset_file": EASTER_EGG_GROUP_ASSET["asset_label"],
+                "notes": "Private testing art sheet for the hidden ACE roster.",
+            }
+        )
+        if EASTER_EGG_GROUP_ASSET.get("asset_path"):
+            # Devin says Clubs is funny, so the crew shot gets a little stage space at the end of the gallery :D
+            gallery_images.append(
+                {
+                    "path": EASTER_EGG_GROUP_ASSET["asset_path"],
+                    "row": group_row,
+                    "column": 7,
+                    "max_width_px": 320,
+                    "max_height_px": 220,
+                    "name": str(EASTER_EGG_GROUP_ASSET["asset_label"]),
+                }
+            )
+
+        return profile_rows, equipment_log_rows, gallery_rows, gallery_images
+
+    def _checked_out_report(self) -> tuple[list[str], list[dict[str, Any]]]:
+        columns = [
+            "barcode_id",
+            "item_name",
+            "category",
+            "variant",
+            "item_type",
+            "cadet_name",
+            "cadet_email",
+            "approved_by_name",
+            "approved_by_role",
+            "checkout_time",
+            "days_out",
+        ]
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    t.barcode_id,
+                    i.item_name,
+                    i.category,
+                    i.variant,
+                    i.item_type,
+                    t.cadet_name,
+                    t.cadet_email,
+                    t.approved_by_name,
+                    t.approved_by_role,
+                    t.checkout_time,
+                    CAST(julianday('now') - julianday(t.checkout_time) AS INTEGER) AS days_out
+                FROM transactions t
+                JOIN items i ON i.barcode_id = t.barcode_id
+                WHERE t.return_time IS NULL
+                  AND t.barcode_id NOT IN ({", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)})
+                ORDER BY t.checkout_time DESC
+                """,
+                EASTER_EGG_BARCODE_IDS,
+            ).fetchall()
+        return columns, [dict(row) for row in rows]
+
+    def _transaction_history_report(self) -> tuple[list[str], list[dict[str, Any]]]:
+        columns = [
+            "transaction_id",
+            "barcode_id",
+            "item_name",
+            "cadet_name",
+            "cadet_email",
+            "approved_by_name",
+            "approved_by_role",
+            "checkout_time",
+            "return_time",
+            "return_approved_by_name",
+            "return_approved_by_role",
+            "condition_notes",
+        ]
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    t.transaction_id,
+                    t.barcode_id,
+                    i.item_name,
+                    t.cadet_name,
+                    t.cadet_email,
+                    t.approved_by_name,
+                    t.approved_by_role,
+                    t.checkout_time,
+                    t.return_time,
+                    t.return_approved_by_name,
+                    t.return_approved_by_role,
+                    t.condition_notes
+                FROM transactions t
+                JOIN items i ON i.barcode_id = t.barcode_id
+                WHERE t.barcode_id NOT IN ({", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)})
+                ORDER BY t.checkout_time DESC, t.transaction_id DESC
+                """,
+                EASTER_EGG_BARCODE_IDS,
+            ).fetchall()
+        return columns, [dict(row) for row in rows]
+
+    def _fetch_label_records_by_barcode_ids(self, barcode_ids: list[str]) -> list[dict[str, Any]]:
+        cleaned_ids = [
+            barcode.strip().upper()
+            for barcode in barcode_ids
+            if barcode.strip() and not self._is_easter_egg_barcode(barcode)
+        ]
+        if not cleaned_ids:
+            return []
+        placeholders = ", ".join("?" for _ in cleaned_ids)
+        query = f"""
+            SELECT
+                barcode_id,
+                item_name,
+                category,
+                variant,
+                item_type,
+                status,
+                total_quantity,
+                available_quantity,
+                notes,
+                created_at,
+                updated_at
+            FROM items
+            WHERE barcode_id IN ({placeholders})
+            ORDER BY category, item_type, variant, barcode_id
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(query, cleaned_ids).fetchall()
+        return [dict(row) for row in rows]
+
+    def _expand_label_records(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        barcode_quantities: dict[str, int],
+        barcode_order: list[str],
+    ) -> list[dict[str, Any]]:
+        record_map = {str(record["barcode_id"]).upper(): record for record in records}
+        expanded_records: list[dict[str, Any]] = []
+
+        for barcode_id in barcode_order:
+            cleaned_barcode = barcode_id.strip().upper()
+            record = record_map.get(cleaned_barcode)
+            if record is None:
+                continue
+            quantity = barcode_quantities.get(cleaned_barcode, 1)
+            try:
+                copies = max(1, int(quantity))
+            except (TypeError, ValueError):
+                copies = 1
+            for _ in range(copies):
+                expanded_records.append(dict(record))
+
+        return expanded_records
+
+    def _write_simple_xlsx(
+        self,
+        path: Path,
+        *,
+        sheet_name: str,
+        columns: list[str],
+        rows: list[dict[str, Any]],
+    ) -> Path:
+        return self._write_simple_xlsx_workbook(
+            path,
+            workbook_title=f"{self.settings.org_name} Inventory Export",
+            sheets=[
+                {
+                    "sheet_name": sheet_name,
+                    "columns": columns,
+                    "rows": rows,
+                }
+            ],
+        )
+
+    def _write_simple_xlsx_workbook(
+        self,
+        path: Path,
+        *,
+        workbook_title: str,
+        sheets: list[dict[str, Any]],
+    ) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        created_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        normalized_sheets = self._normalize_xlsx_sheets(sheets)
+        prepared_images = self._prepare_xlsx_sheet_images(normalized_sheets)
+        drawing_sheet_indexes = [sheet_index for sheet_index, sheet in enumerate(normalized_sheets, start=1) if sheet["images"]]
+
+        workbook_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            "<sheets>"
+            + "".join(
+                f'<sheet name="{escape(sheet["sheet_name"])}" sheetId="{sheet_index}" r:id="rId{sheet_index}"/>'
+                for sheet_index, sheet in enumerate(normalized_sheets, start=1)
+            )
+            + "</sheets>"
+            + "</workbook>"
+        )
+
+        styles_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<fonts count="2">'
+            '<font><sz val="10"/><name val="Aptos Narrow"/></font>'
+            '<font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Aptos Narrow"/></font>'
+            '</fonts>'
+            '<fills count="3"><fill><patternFill patternType="none"/></fill>'
+            '<fill><patternFill patternType="gray125"/></fill>'
+            '<fill><patternFill patternType="solid"><fgColor rgb="FF03244D"/><bgColor indexed="64"/></patternFill></fill>'
+            '</fills>'
+            '<borders count="2">'
+            '<border><left/><right/><top/><bottom/><diagonal/></border>'
+            '<border><left style="thin"><color rgb="FFD1D5DB"/></left>'
+            '<right style="thin"><color rgb="FFD1D5DB"/></right>'
+            '<top style="thin"><color rgb="FFD1D5DB"/></top>'
+            '<bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border>'
+            '</borders>'
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            '<cellXfs count="3">'
+            '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+            '<alignment horizontal="center" vertical="center" wrapText="1"/></xf>'
+            '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1">'
+            '<alignment vertical="center"/></xf>'
+            '</cellXfs>'
+            '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+            "</styleSheet>"
+        )
+
+        content_types_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            + ('<Default Extension="png" ContentType="image/png"/>' if prepared_images else "")
+            + '<Override PartName="/xl/workbook.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            + "".join(
+                f'<Override PartName="/xl/worksheets/sheet{sheet_index}.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                for sheet_index in range(1, len(normalized_sheets) + 1)
+            )
+            + "".join(
+                f'<Override PartName="/xl/drawings/drawing{drawing_index}.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>'
+                for drawing_index, _sheet_index in enumerate(drawing_sheet_indexes, start=1)
+            )
+            + '<Override PartName="/xl/styles.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            + '<Override PartName="/docProps/core.xml" '
+            'ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+            + '<Override PartName="/docProps/app.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+            + "</Types>"
+        )
+
+        root_rels_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+            '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
+            "</Relationships>"
+        )
+
+        workbook_rels_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + "".join(
+                f'<Relationship Id="rId{sheet_index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+                f'Target="worksheets/sheet{sheet_index}.xml"/>'
+                for sheet_index in range(1, len(normalized_sheets) + 1)
+            )
+            + f'<Relationship Id="rId{len(normalized_sheets) + 1}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+            "</Relationships>"
+        )
+
+        app_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
+            'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+            f"<Application>{escape(self.settings.org_name)}</Application>"
+            "<HeadingPairs>"
+            "<vt:vector size=\"2\" baseType=\"variant\">"
+            "<vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant>"
+            f"<vt:variant><vt:i4>{len(normalized_sheets)}</vt:i4></vt:variant>"
+            "</vt:vector>"
+            "</HeadingPairs>"
+            "<TitlesOfParts>"
+            f'<vt:vector size="{len(normalized_sheets)}" baseType="lpstr">'
+            + "".join(f"<vt:lpstr>{escape(sheet['sheet_name'])}</vt:lpstr>" for sheet in normalized_sheets)
+            + "</vt:vector>"
+            "</TitlesOfParts>"
+            "</Properties>"
+        )
+
+        core_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+            'xmlns:dcterms="http://purl.org/dc/terms/" '
+            'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
+            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+            f"<dc:title>{escape(workbook_title)}</dc:title>"
+            f"<dc:creator>{escape(self.settings.org_name)}</dc:creator>"
+            f'<dcterms:created xsi:type="dcterms:W3CDTF">{created_utc}</dcterms:created>'
+            f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created_utc}</dcterms:modified>'
+            "</cp:coreProperties>"
+        )
+
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as workbook:
+            workbook.writestr("[Content_Types].xml", content_types_xml)
+            workbook.writestr("_rels/.rels", root_rels_xml)
+            workbook.writestr("docProps/app.xml", app_xml)
+            workbook.writestr("docProps/core.xml", core_xml)
+            workbook.writestr("xl/workbook.xml", workbook_xml)
+            workbook.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+            workbook.writestr("xl/styles.xml", styles_xml)
+            for sheet_index, sheet in enumerate(normalized_sheets, start=1):
+                has_images = bool(sheet["images"])
+                worksheet_xml = self._build_xlsx_worksheet_xml(sheet["columns"], sheet["rows"], has_images=has_images)
+                workbook.writestr(f"xl/worksheets/sheet{sheet_index}.xml", worksheet_xml)
+                if has_images:
+                    workbook.writestr(
+                        f"xl/worksheets/_rels/sheet{sheet_index}.xml.rels",
+                        self._build_xlsx_sheet_relationships_xml(int(sheet["drawing_index"])),
+                    )
+                    workbook.writestr(
+                        f"xl/drawings/drawing{sheet['drawing_index']}.xml",
+                        self._build_xlsx_drawing_xml(sheet["images"]),
+                    )
+                    workbook.writestr(
+                        f"xl/drawings/_rels/drawing{sheet['drawing_index']}.xml.rels",
+                        self._build_xlsx_drawing_relationships_xml(sheet["images"]),
+                    )
+            for image in prepared_images:
+                workbook.writestr(f"xl/media/{image['media_name']}", image["content"])
+        return path
+
+    def _normalize_xlsx_sheets(self, sheets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized_sheets: list[dict[str, Any]] = []
+        used_names: set[str] = set()
+        for sheet in sheets:
+            raw_name = str(sheet.get("sheet_name") or "Sheet")
+            columns = list(sheet.get("columns") or [])
+            rows = list(sheet.get("rows") or [])
+            images = list(sheet.get("images") or [])
+            sheet_name = self._unique_xlsx_sheet_name(raw_name, used_names)
+            normalized_sheets.append(
+                {
+                    "sheet_name": sheet_name,
+                    "columns": columns,
+                    "rows": rows,
+                    "images": images,
+                }
+            )
+        if not normalized_sheets:
+            normalized_sheets.append({"sheet_name": "Sheet1", "columns": [], "rows": [], "images": []})
+        return normalized_sheets
+
+    def _build_xlsx_worksheet_xml(self, columns: list[str], rows: list[dict[str, Any]], *, has_images: bool = False) -> str:
+        width_map = {
+            "Item No": 14, "Qty Issued": 12, "Qty Available": 14,
+            "Total in Inventory": 18, "Item Name": 34, "Size": 18,
+            "Category": 22, "Subcategory": 22, "Sex": 9, "Stock #": 18,
+            "UoM": 9, "Go to Writeoffs": 18, "Source": 18,
+        }
+        columns_xml = "".join(
+            f'<col min="{index}" max="{index}" width="{width_map.get(column, 18)}" customWidth="1"/>'
+            for index, column in enumerate(columns, start=1)
+        )
+        last_column = self._xlsx_column_name(max(1, len(columns)))
+        last_row = max(1, len(rows) + 1)
+        used_range = f"A1:{last_column}{last_row}"
+        sheet_rows: list[str] = []
+        header_cells = "".join(
+            self._xlsx_inline_string_cell(
+                column_index + 1,
+                1,
+                column if column in WINGS_COLUMNS else column.replace("_", " ").title(),
+                style_id=1,
+            )
+            for column_index, column in enumerate(columns)
+        )
+        sheet_rows.append(f'<row r="1" ht="30" customHeight="1">{header_cells}</row>')
+
+        for row_index, row in enumerate(rows, start=2):
+            cell_xml = "".join(
+                self._xlsx_cell(column_index + 1, row_index, row.get(column, ""), style_id=2)
+                for column_index, column in enumerate(columns)
+            )
+            sheet_rows.append(f'<row r="{row_index}">{cell_xml}</row>')
+
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            f'<dimension ref="{used_range}"/>'
+            '<sheetViews><sheetView workbookViewId="0">'
+            '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+            '</sheetView></sheetViews>'
+            '<sheetFormatPr defaultRowHeight="15"/>'
+            f'<cols>{columns_xml}</cols>'
+            f'<sheetData>{"".join(sheet_rows)}</sheetData>'
+            f'<autoFilter ref="{used_range}"/>'
+            + ('<drawing r:id="rId1"/>' if has_images else "")
+            + "</worksheet>"
+        )
+
+    def _prepare_xlsx_sheet_images(self, sheets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared_images: list[dict[str, Any]] = []
+        drawing_index = 1
+        media_index = 1
+        for sheet in sheets:
+            raw_images = list(sheet.get("images") or [])
+            normalized_images: list[dict[str, Any]] = []
+            for image in raw_images:
+                # Devin says Heart is loyal, so missing art quietly steps aside instead of breaking the whole secret workbook :D
+                prepared = self._prepare_xlsx_image(image, media_index=media_index)
+                if prepared is None:
+                    continue
+                media_index += 1
+                normalized_images.append(prepared)
+                prepared_images.append(prepared)
+            sheet["images"] = normalized_images
+            if normalized_images:
+                sheet["drawing_index"] = drawing_index
+                drawing_index += 1
+        return prepared_images
+
+    def _prepare_xlsx_image(self, image: dict[str, Any], *, media_index: int) -> dict[str, Any] | None:
+        raw_path = image.get("path")
+        if raw_path is None:
+            return None
+        image_path = Path(str(raw_path)).expanduser()
+        if not image_path.exists():
+            return None
+
+        with Image.open(image_path) as source_image:
+            rendered_image = source_image.copy()
+            if getattr(source_image, "is_animated", False):
+                source_image.seek(0)
+                rendered_image = source_image.convert("RGBA")
+            elif rendered_image.mode not in {"RGB", "RGBA"}:
+                rendered_image = rendered_image.convert("RGBA")
+
+            max_width_px = image.get("max_width_px")
+            max_height_px = image.get("max_height_px")
+            if max_width_px or max_height_px:
+                resized_image = rendered_image.copy()
+                # Devin says Spade is smart, so every sprite gets normalized before Excel tries to show it off :D
+                resized_image.thumbnail(
+                    (
+                        int(max_width_px or rendered_image.width),
+                        int(max_height_px or rendered_image.height),
+                    ),
+                    getattr(Image, "Resampling", Image).NEAREST,
+                )
+                rendered_image = resized_image
+
+            output = BytesIO()
+            rendered_image.save(output, format="PNG")
+            image_bytes = output.getvalue()
+
+        media_name = f"image{media_index}.png"
+        return {
+            "media_name": media_name,
+            "content": image_bytes,
+            "row": max(1, int(image.get("row", 1))),
+            "column": max(1, int(image.get("column", 1))),
+            "width_px": rendered_image.width,
+            "height_px": rendered_image.height,
+            "name": str(image.get("name") or media_name),
+        }
+
+    def _build_xlsx_sheet_relationships_xml(self, drawing_index: int) -> str:
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing{drawing_index}.xml"/>'
+            "</Relationships>"
+        )
+
+    def _build_xlsx_drawing_xml(self, images: list[dict[str, Any]]) -> str:
+        anchors = "".join(
+            self._build_xlsx_image_anchor(image, picture_id=picture_id)
+            for picture_id, image in enumerate(images, start=1)
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+            'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            f"{anchors}"
+            "</xdr:wsDr>"
+        )
+
+    def _build_xlsx_drawing_relationships_xml(self, images: list[dict[str, Any]]) -> str:
+        relationships = "".join(
+            f'<Relationship Id="rId{index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/{escape(image["media_name"])}"/>'
+            for index, image in enumerate(images, start=1)
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f"{relationships}"
+            "</Relationships>"
+        )
+
+    def _build_xlsx_image_anchor(self, image: dict[str, Any], *, picture_id: int) -> str:
+        width_emu = int(int(image["width_px"]) * 9525)
+        height_emu = int(int(image["height_px"]) * 9525)
+        start_column = max(0, int(image["column"]) - 1)
+        start_row = max(0, int(image["row"]) - 1)
+        image_name = escape(str(image["name"]))
+        relationship_id = f"rId{picture_id}"
+        # Devin says Clubs is funny, so the gallery anchors leave room for each sprite to steal the scene a little :D
+        return (
+            "<xdr:oneCellAnchor>"
+            f"<xdr:from><xdr:col>{start_column}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{start_row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>"
+            f'<xdr:ext cx="{width_emu}" cy="{height_emu}"/>'
+            "<xdr:pic>"
+            f'<xdr:nvPicPr><xdr:cNvPr id="{picture_id}" name="{image_name}"/><xdr:cNvPicPr/></xdr:nvPicPr>'
+            f'<xdr:blipFill><a:blip r:embed="{relationship_id}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
+            f'<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{width_emu}" cy="{height_emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
+            "</xdr:pic>"
+            "<xdr:clientData/>"
+            "</xdr:oneCellAnchor>"
+        )
+
+    @staticmethod
+    def _unique_xlsx_sheet_name(raw_name: str, used_names: set[str]) -> str:
+        sanitized = re.sub(r"[:\\/?*\[\]]", "-", raw_name).strip() or "Sheet"
+        base_name = sanitized[:31]
+        candidate = base_name
+        suffix = 2
+        while candidate in used_names:
+            suffix_text = f"_{suffix}"
+            candidate = f"{base_name[: max(1, 31 - len(suffix_text))]}{suffix_text}"
+            suffix += 1
+        used_names.add(candidate)
+        return candidate
+
+    @staticmethod
+    def _safe_filename_token(value: str, *, fallback: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9]+", "_", value.strip()).strip("_").lower()
+        return cleaned or fallback
+
+    @classmethod
+    def _days_between_timestamps(cls, start_value: Any, end_value: Any | None = None) -> int | str:
+        start_dt = cls._parse_export_timestamp(start_value)
+        if start_dt is None:
+            return ""
+        end_dt = cls._parse_export_timestamp(end_value) if end_value else datetime.now()
+        if end_dt is None:
+            end_dt = datetime.now()
+        if (start_dt.tzinfo is None) != (end_dt.tzinfo is None):
+            start_dt = start_dt.replace(tzinfo=None)
+            end_dt = end_dt.replace(tzinfo=None)
+        return max(0, int((end_dt - start_dt).total_seconds() // 86400))
+
+    @staticmethod
+    def _parse_export_timestamp(value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        for candidate in (text, text.replace(" ", "T", 1)):
+            try:
+                return datetime.fromisoformat(candidate)
+            except ValueError:
+                continue
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        return None
+
+    @classmethod
+    def _xlsx_cell(cls, column_index: int, row_index: int, value: Any, *, style_id: int = 0) -> str:
+        if isinstance(value, bool):
+            value = "TRUE" if value else "FALSE"
+        if isinstance(value, int) and not isinstance(value, bool):
+            cell_ref = f"{cls._xlsx_column_name(column_index)}{row_index}"
+            return f'<c r="{cell_ref}" s="{style_id}"><v>{value}</v></c>'
+        return cls._xlsx_inline_string_cell(
+            column_index,
+            row_index,
+            "" if value is None else str(value),
+            style_id=style_id,
+        )
+
+    @classmethod
+    def _xlsx_inline_string_cell(
+        cls,
+        column_index: int,
+        row_index: int,
+        value: str,
+        *,
+        style_id: int = 0,
+    ) -> str:
+        cell_ref = f"{cls._xlsx_column_name(column_index)}{row_index}"
+        escaped_value = escape(value)
+        return (
+            f'<c r="{cell_ref}" s="{style_id}" t="inlineStr">'
+            f'<is><t xml:space="preserve">{escaped_value}</t></is></c>'
+        )
+
+    @staticmethod
+    def _xlsx_column_name(index: int) -> str:
+        letters: list[str] = []
+        current = index
+        while current > 0:
+            current, remainder = divmod(current - 1, 26)
+            letters.append(chr(65 + remainder))
+        return "".join(reversed(letters)) or "A"
+
+    @staticmethod
+    def _not_in_clause(column_name: str, values: list[Any] | tuple[Any, ...] | set[Any]) -> str:
+        values_list = list(values)
+        placeholders = ", ".join("?" for _ in values_list)
+        return f"{column_name} NOT IN ({placeholders})"
+
+    @staticmethod
+    def _is_easter_egg_barcode(barcode_id: str | None) -> bool:
+        return str(barcode_id or "").strip().upper() in EASTER_EGG_BARCODE_IDS
+
+    @staticmethod
+    def _is_easter_egg_cadet_id(cadet_id: int | str | None) -> bool:
+        try:
+            return int(cadet_id or 0) in RESERVED_CADET_IDS
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _is_easter_egg_admin_id(admin_id: int | str | None) -> bool:
+        try:
+            return int(admin_id or 0) in RESERVED_ADMIN_IDS
+        except (TypeError, ValueError):
+            return False
+
+    def _upsert_cadet(self, connection: sqlite3.Connection, full_name: str, email: str) -> dict[str, Any]:
+        name, normalized_email = self._validate_cadet_identity(full_name, email)
+        existing = connection.execute(
+            "SELECT cadet_id FROM cadets WHERE lower(email) = lower(?)",
+            (normalized_email,),
+        ).fetchone()
+        if existing:
+            connection.execute(
+                """
+                UPDATE cadets
+                SET full_name = ?, email = ?, updated_at = ?
+                WHERE cadet_id = ?
+                """,
+                (name, normalized_email, utc_now(), existing["cadet_id"]),
+            )
+            cadet_id = existing["cadet_id"]
+        else:
+            cadet_id = self._lowest_available_integer_id(
+                connection,
+                table_name="cadets",
+                id_column="cadet_id",
+                reserved_ids=RESERVED_CADET_IDS,
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO cadets(cadet_id, full_name, email, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (cadet_id, name, normalized_email, utc_now(), utc_now()),
+            )
+
+        connection.execute(
+            """
+            UPDATE transactions
+            SET cadet_id = ?
+            WHERE cadet_id IS NULL AND lower(cadet_email) = lower(?)
+            """,
+            (cadet_id, normalized_email),
+        )
+
+        row = connection.execute(
+            "SELECT cadet_id, full_name, email, created_at, updated_at FROM cadets WHERE cadet_id = ?",
+            (cadet_id,),
+        ).fetchone()
+        return dict(row)
+
+    @staticmethod
+    def _lowest_available_integer_id(
+        connection: sqlite3.Connection,
+        *,
+        table_name: str,
+        id_column: str,
+        reserved_ids: set[int] | None = None,
+    ) -> int:
+        reserved = set(reserved_ids or set())
+        rows = connection.execute(
+            f"SELECT {id_column} FROM {table_name} ORDER BY {id_column}"
+        ).fetchall()
+        used_ids = {int(row[id_column]) for row in rows}
+        candidate = 1
+        while True:
+            if candidate not in reserved and candidate not in used_ids:
+                return candidate
+            candidate += 1
+
+    def _sync_item_state(self, connection: sqlite3.Connection, barcode_id: str) -> None:
+        item = connection.execute(
+            "SELECT total_quantity, status FROM items WHERE barcode_id = ?",
+            (barcode_id,),
+        ).fetchone()
+        if item is None:
+            return
+        if item["status"] in {"Retired", "Lost"}:
+            connection.execute(
+                "UPDATE items SET available_quantity = 0, updated_at = ? WHERE barcode_id = ?",
+                (utc_now(), barcode_id),
+            )
+            return
+
+        open_units = self._open_checkout_count(connection, barcode_id)
+        available_quantity = max(item["total_quantity"] - open_units, 0)
+        status = "Available" if available_quantity > 0 else "Checked Out"
+        connection.execute(
+            """
+            UPDATE items
+            SET available_quantity = ?, status = ?, updated_at = ?
+            WHERE barcode_id = ?
+            """,
+            (available_quantity, status, utc_now(), barcode_id),
+        )
+
+    def _open_checkout_count(self, connection: sqlite3.Connection, barcode_id: str) -> int:
+        row = connection.execute(
+            "SELECT COUNT(*) AS open_count FROM transactions WHERE barcode_id = ? AND return_time IS NULL",
+            (barcode_id,),
+        ).fetchone()
+        return int(row["open_count"])
+
+    def _record_catalog_values(
+        self,
+        connection: sqlite3.Connection,
+        category: str,
+        variant: str,
+        item_type: str,
+        item_name: str,
+    ) -> None:
+        self.database.record_lookup_value("category", category, connection=connection)
+        self.database.record_lookup_value("variant", variant, connection=connection)
+        self.database.record_lookup_value("item_type", item_type, connection=connection)
+        self.database.record_lookup_value("item_name", item_name, connection=connection)
+
+    def _find_matching_item(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        category: str,
+        variant: str,
+        item_type: str,
+        item_name: str,
+        wings_item_no: str = "",
+    ) -> sqlite3.Row | None:
+        if wings_item_no:
+            return connection.execute(
+                f"""
+                SELECT * FROM items
+                WHERE wings_item_no = ?
+                  AND barcode_id NOT IN ({", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)})
+                ORDER BY created_at
+                LIMIT 1
+                """,
+                (wings_item_no, *EASTER_EGG_BARCODE_IDS),
+            ).fetchone()
+        exact_match = connection.execute(
+            f"""
+            SELECT *
+            FROM items
+            WHERE category = ? AND variant = ? AND lower(item_name) = lower(?)
+              AND barcode_id NOT IN ({", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)})
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (category, variant, item_name, *EASTER_EGG_BARCODE_IDS),
+        ).fetchone()
+        if exact_match is not None:
+            return exact_match
+        return None
+
+    def _next_barcode_for_prefix(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        category: str,
+        variant: str,
+        item_type: str,
+    ) -> str:
+        prefix = "ACE-SHORT"
+        last_number_row = connection.execute(
+            "SELECT last_number FROM barcode_sequences WHERE prefix = ?",
+            (prefix,),
+        ).fetchone()
+        sequence_number = last_number_row["last_number"] + 1 if last_number_row else 1
+        barcode_id = compose_barcode(category, variant, item_type, sequence_number)
+        while connection.execute("SELECT 1 FROM items WHERE barcode_id = ?", (barcode_id,)).fetchone():
+            sequence_number += 1
+            barcode_id = compose_barcode(category, variant, item_type, sequence_number)
+        return barcode_id
+
+    @staticmethod
+    def _validate_quantity(quantity: int, *, field_name: str = "Quantity") -> int:
+        try:
+            value = int(quantity)
+        except (TypeError, ValueError) as exc:
+            raise InventoryError(f"{field_name} must be a whole number.") from exc
+        if value < 1:
+            raise InventoryError(f"{field_name} must be at least 1.")
+        return value
+
+    @staticmethod
+    def _clean_lookup(value: str, label: str) -> str:
+        cleaned = value.strip().upper()
+        if not cleaned:
+            raise InventoryError(f"{label} is required.")
+        if label == "Item type":
+            cleaned = ITEM_TYPE_ALIASES.get(cleaned, cleaned)
+        return cleaned
+
+    @staticmethod
+    def _clean_item_name(value: str) -> str:
+        cleaned = value.strip()
+        folded = cleaned.casefold()
+        for legacy_name, canonical_name in ITEM_NAME_ALIASES.items():
+            if legacy_name.casefold() == folded:
+                return canonical_name
+        return cleaned
+
+    def _normalize_admin_identity(self, approved_by: dict[str, Any] | None) -> dict[str, Any]:
+        if not approved_by:
+            raise InventoryError("An authenticated admin is required before approving this action.")
+
+        role = str(approved_by.get("role") or DEFAULT_ADMIN_ROLE).strip().upper()
+        display_name = str(approved_by.get("display_name") or "").strip()
+        admin_id = approved_by.get("admin_id")
+
+        if role == MASTER_ADMIN_ROLE:
+            approved_name = "CADRE"
+        else:
+            if not display_name:
+                raise InventoryError("Authenticated admin record is missing a display name.")
+            approved_name = self._smart_title(display_name)
+
+        return {
+            "admin_id": admin_id,
+            "approved_by_name": approved_name,
+            "approved_by_role": role,
+            "label": f"{role} {approved_name}".strip() if role != MASTER_ADMIN_ROLE else MASTER_ADMIN_ROLE,
+        }
+
+    def _validate_cadet_identity(self, full_name: str, email: str) -> tuple[str, str]:
+        email_value = email.strip().lower()
+        if not EMAIL_PATTERN.match(email_value):
+            raise InventoryError("Cadet email must include an @ symbol and cannot contain spaces.")
+
+        match = NAME_PATTERN.match(full_name)
+        if not match:
+            raise InventoryError("Cadet name must use the format 'Last, MI, First'.")
+
+        last_name = self._smart_title(match.group(1))
+        middle_initials = match.group(2).replace(".", "").upper()
+        first_name = self._smart_title(match.group(3))
+        normalized_name = f"{last_name}, {middle_initials}, {first_name}"
+        return normalized_name, email_value
+
+    @staticmethod
+    def _smart_title(value: str) -> str:
+        cleaned = " ".join(value.strip().split())
+        return cleaned.title()
+
+    @staticmethod
+    def _hash_admin_code(code: str) -> str:
+        return hashlib.sha256(code.strip().encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _suggest_item_name(category: str, variant: str, item_type: str) -> str:
+        title_variant = variant.replace("-", " ").title()
+        title_type = item_type.replace("-", " ").title()
+        if category == "PT" and variant in {"DRY", "DRY-WICKING", "COTTON"}:
+            return f"{title_variant} {title_type}"
+        return f"{title_type} ({title_variant})"
+
+    @staticmethod
+    def _append_note(existing_notes: str | None, new_note: str) -> str:
+        existing = (existing_notes or "").strip()
+        addition = new_note.strip()
+        if not addition:
+            return existing
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        entry = f"[{timestamp}] {addition}"
+        return f"{existing}\n{entry}".strip() if existing else entry

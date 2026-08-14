@@ -1,0 +1,6 @@
+{
+  "org_name": "A.C.E.",
+  "db_path": "portable_data/inventory.db",
+  "backup_interval_ops": 5,
+  "overdue_days": 900
+}
