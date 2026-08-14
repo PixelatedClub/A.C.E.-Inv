@@ -2,9 +2,11 @@
 
 A.C.E. is a portable AFROTC clothing and equipment inventory system built for simple cadet use. It supports WINGS-ready imports and exports, searchable equipment records, compact barcode labels, scanner-based checkout and return, cadet history, reports, backups, and flash-drive deployment on Windows.
 
-## Current release
+## Download A.C.E.
 
-The clean executable package is stored locally in `release/A.C.E_Email_Ready.zip`. Git ignores this file so it can be uploaded separately as a GitHub Release asset without placing a generated executable in the source history.
+**[Download the current A.C.E. Windows application](https://github.com/PixelatedClub/A.C.E.-Inv/releases/latest/download/A.C.E.zip)**
+
+The download is named `A.C.E.zip` and contains `A.C.E.exe`. Extract the ZIP before running the application. The files shown in the main repository are the application source code, documentation, icons, animation, and audio assets.
 
 The application starts with:
 
@@ -28,7 +30,7 @@ The application starts with:
 
 ## Run the packaged application
 
-1. Download `A.C.E_Email_Ready.zip` from the GitHub Releases page.
+1. Download `A.C.E.zip` from the GitHub Releases page.
 2. Extract the ZIP to a normal folder or approved flash drive.
 3. Double-click `A.C.E.exe`.
 4. Sign in with the cadre administrator code `Det005`.
@@ -61,4 +63,3 @@ Never upload an operational database, backup, export, or completed cadet report 
 ## Barcode acceptance note
 
 The application now generates compact labels designed for 1 x 2-inch stock. The PDF layout and barcode encoding have been verified in software. A final physical print-and-scan test with the Tera Model 5100 is still required before operational use.
-

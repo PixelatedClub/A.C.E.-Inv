@@ -31,8 +31,7 @@ Create the empty repository on GitHub before adding the remote. Do not add a Git
 2. Select **Releases**, then **Draft a new release**.
 3. Create a tag such as `v1.0.0`.
 4. Title it `A.C.E. Inventory v1.0.0`.
-5. Attach `release/A.C.E_Email_Ready.zip`.
+5. Attach `release/A.C.E.zip`.
 6. State that the physical Tera 5100 label scan remains the final acceptance check.
 
 The release ZIP is intentionally ignored by git. It should be attached to the Release page, not committed to the repository.
-
