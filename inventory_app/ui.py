@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import bisect
+import ctypes
 import random
 import re
 import shutil
+import string
 import time
 import tkinter as tk
 import textwrap
@@ -14,7 +16,13 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageSequence, ImageTk
 
-from .config import APP_TITLE, AppSettings, save_settings
+from .config import (
+    APP_TITLE,
+    AppSettings,
+    device_backup_setup_completed,
+    save_device_backup_settings,
+    save_settings,
+)
 from .services import InventoryError, InventoryService
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
 from .wings_catalog import WINGS_COLUMNS
@@ -350,6 +358,7 @@ class InventoryApp(tk.Tk):
 
         self.settings_org_name_var = tk.StringVar()
         self.settings_db_path_var = tk.StringVar()
+        self.settings_protected_backup_var = tk.StringVar()
         self.settings_backup_interval_var = tk.StringVar()
         self.settings_overdue_days_var = tk.StringVar()
         self.current_admin_var = tk.StringVar(value="Not authenticated")
@@ -1330,18 +1339,32 @@ class InventoryApp(tk.Tk):
         ttk.Entry(frame, textvariable=self.settings_db_path_var).grid(row=2, column=1, sticky="ew", pady=3)
         ttk.Button(frame, text="Browse", command=self._choose_database_path).grid(row=2, column=2, padx=(8, 0))
 
-        ttk.Label(frame, text="Backup Every X Writes").grid(row=3, column=0, sticky="w")
-        ttk.Spinbox(frame, from_=1, to=1000, textvariable=self.settings_backup_interval_var, width=10).grid(
-            row=3, column=1, sticky="w", pady=3
+        ttk.Label(frame, text="Protected Backup Folder").grid(row=3, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.settings_protected_backup_var).grid(
+            row=3, column=1, sticky="ew", pady=3
+        )
+        ttk.Button(frame, text="Choose or Create", command=self._choose_protected_backup_for_settings).grid(
+            row=3, column=2, padx=(8, 0)
         )
         ttk.Label(
             frame,
-            text="Backups are compressed automatically. A.C.E. keeps the newest 10 and removes older copies.",
+            text="Recommended: choose a folder on a different drive, this computer, or OneDrive so backups survive USB failure.",
             style="Subtitle.TLabel",
-        ).grid(row=3, column=2, sticky="w", padx=(8, 0))
+            wraplength=780,
+        ).grid(row=4, column=1, columnspan=2, sticky="w", pady=(0, 4))
+
+        ttk.Label(frame, text="Backup Every X Writes").grid(row=5, column=0, sticky="w")
+        ttk.Spinbox(frame, from_=1, to=1000, textvariable=self.settings_backup_interval_var, width=10).grid(
+            row=5, column=1, sticky="w", pady=3
+        )
+        ttk.Label(
+            frame,
+            text="A.C.E. keeps the newest 10 compressed copies in both the portable and protected locations.",
+            style="Subtitle.TLabel",
+        ).grid(row=5, column=2, sticky="w", padx=(8, 0))
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        buttons.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(12, 0))
         for index in range(4):
             buttons.columnconfigure(index, weight=1)
         ttk.Button(buttons, text="Save Settings", command=self._save_settings).grid(
@@ -2250,9 +2273,241 @@ class InventoryApp(tk.Tk):
             if self.winfo_exists():
                 self.destroy()
             return
+        if not device_backup_setup_completed():
+            self._prompt_for_backup_location()
         self.deiconify()
         self.lift()
         self.after(100, self._focus_checkout_scan)
+
+    def _prompt_for_backup_location(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Protect A.C.E. Backups")
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        dialog.configure(bg="#eef4fb")
+
+        container = ttk.Frame(dialog, padding=20)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+
+        ttk.Label(container, text="Where should A.C.E. protect its backups?", style="Title.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            container,
+            text=(
+                "Your live inventory stays with A.C.E. on the portable drive. "
+                "Choose a second location for compressed recovery copies so a failed or lost USB does not erase everything."
+            ),
+            wraplength=610,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(8, 14))
+
+        current_path = self.settings.protected_backup_dir
+        protection_status = self.service.backup_protection_status()
+        if current_path is None:
+            current_text = "Not configured - backups are currently USB-only"
+        elif protection_status["last_error"]:
+            current_text = f"Unavailable this session: {current_path}\n{protection_status['last_error']}"
+        else:
+            current_text = f"Ready: {current_path}"
+        current_frame = ttk.LabelFrame(container, text="Current Protected Location", padding=10)
+        current_frame.grid(row=2, column=0, sticky="ew")
+        current_frame.columnconfigure(0, weight=1)
+        ttk.Label(current_frame, text=current_text, wraplength=580).grid(row=0, column=0, sticky="w")
+
+        recommended_frame = ttk.LabelFrame(container, text="Recommended", padding=10)
+        recommended_frame.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        recommended_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            recommended_frame,
+            text="Choose or create a folder on this computer, another drive, or a synced OneDrive folder.",
+            wraplength=500,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            recommended_frame,
+            text="Choose or Create Protected Folder",
+            command=lambda: self._choose_protected_backup_from_prompt(dialog),
+        ).grid(row=0, column=1, padx=(12, 0))
+
+        usb_roots = self._detect_removable_drive_roots()
+        usb_var = tk.StringVar(value=str(usb_roots[0]) if usb_roots else "No removable USB drive detected")
+        usb_frame = ttk.LabelFrame(container, text="USB Drive Option", padding=10)
+        usb_frame.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        usb_frame.columnconfigure(0, weight=1)
+        ttk.Combobox(
+            usb_frame,
+            textvariable=usb_var,
+            values=[str(path) for path in usb_roots],
+            state="readonly" if usb_roots else "disabled",
+        ).grid(row=0, column=0, sticky="ew")
+        usb_button = ttk.Button(
+            usb_frame,
+            text="Use Selected USB",
+            command=lambda: self._use_usb_backup_from_prompt(dialog, usb_var.get()),
+        )
+        usb_button.grid(row=0, column=1, padx=(12, 0))
+        if not usb_roots:
+            usb_button.state(["disabled"])
+        ttk.Label(
+            usb_frame,
+            text="A second USB can protect against failure of the A.C.E. USB. The same USB does not provide failure protection.",
+            style="Subtitle.TLabel",
+            wraplength=590,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        button_row = ttk.Frame(container)
+        button_row.grid(row=5, column=0, sticky="e", pady=(16, 0))
+        continue_text = "Keep Current Location" if current_path is not None else "USB Only for This Session"
+        ttk.Button(
+            button_row,
+            text=continue_text,
+            command=lambda: self._continue_from_backup_prompt(dialog),
+        ).grid(row=0, column=0)
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: self._continue_from_backup_prompt(dialog))
+        dialog.bind("<Escape>", lambda _event: self._continue_from_backup_prompt(dialog))
+        dialog.update_idletasks()
+        pos_x = max((dialog.winfo_screenwidth() - dialog.winfo_width()) // 2, 0)
+        pos_y = max((dialog.winfo_screenheight() - dialog.winfo_height()) // 2, 0)
+        dialog.geometry(f"+{pos_x}+{pos_y}")
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+        dialog.after(200, lambda: dialog.attributes("-topmost", False) if dialog.winfo_exists() else None)
+        dialog.wait_window()
+
+    def _choose_protected_backup_from_prompt(self, dialog: tk.Toplevel) -> None:
+        initial_dir = self.settings.protected_backup_dir or Path.home()
+        selected = filedialog.askdirectory(
+            title="Choose or Create A.C.E. Protected Backup Folder",
+            initialdir=str(initial_dir),
+            mustexist=False,
+            parent=dialog,
+        )
+        if selected and self._activate_protected_backup_location(Path(selected), parent=dialog):
+            dialog.destroy()
+
+    def _use_usb_backup_from_prompt(self, dialog: tk.Toplevel, selected_root: str) -> None:
+        if not selected_root or selected_root.startswith("No removable"):
+            messagebox.showerror("USB Drive Not Found", "Connect a USB drive or choose another folder.", parent=dialog)
+            return
+        target_dir = Path(selected_root) / "A.C.E. Backups"
+        if self._activate_protected_backup_location(target_dir, parent=dialog):
+            dialog.destroy()
+
+    def _continue_from_backup_prompt(self, dialog: tk.Toplevel) -> None:
+        protection_status = self.service.backup_protection_status()
+        protected_location_unavailable = bool(protection_status["last_error"])
+        if self.settings.protected_backup_dir is None or protected_location_unavailable:
+            unavailable_note = (
+                f"\n\nSaved location error: {protection_status['last_error']}"
+                if protected_location_unavailable
+                else ""
+            )
+            confirmed = messagebox.askyesno(
+                "Continue With USB-Only Backups?",
+                (
+                    "Without a protected folder, all backups remain on the same portable drive as the live inventory. "
+                    "If that USB fails or is lost, those backups may be lost too."
+                    f"{unavailable_note}\n\nContinue for this session?"
+                ),
+                parent=dialog,
+            )
+            if not confirmed:
+                return
+        save_device_backup_settings(
+            protected_backup_path=(
+                str(self.settings.protected_backup_dir)
+                if self.settings.protected_backup_dir is not None
+                else ""
+            ),
+            setup_completed=True,
+        )
+        dialog.destroy()
+
+    def _activate_protected_backup_location(self, directory: Path, *, parent: tk.Misc) -> bool:
+        try:
+            target_dir = directory.expanduser().resolve()
+        except OSError as exc:
+            messagebox.showerror("Invalid Backup Folder", str(exc), parent=parent)
+            return False
+
+        live_drive = self.settings.database_path.anchor.casefold()
+        target_drive = target_dir.anchor.casefold()
+        if live_drive and target_drive and live_drive == target_drive:
+            confirmed = messagebox.askyesno(
+                "Same Drive Warning",
+                (
+                    "This folder appears to be on the same drive as the live A.C.E. database. "
+                    "It will provide another backup folder, but it may not survive failure of that drive.\n\nUse it anyway?"
+                ),
+                parent=parent,
+            )
+            if not confirmed:
+                return False
+
+        validation_file = target_dir / ".ace_backup_write_test"
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            validation_file.write_text("A.C.E. backup location test", encoding="utf-8")
+            validation_file.unlink(missing_ok=True)
+        except OSError as exc:
+            try:
+                validation_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            messagebox.showerror(
+                "Backup Folder Unavailable",
+                f"A.C.E. could not write to this folder:\n{target_dir}\n\n{exc}",
+                parent=parent,
+            )
+            return False
+
+        previous_path = self.settings.protected_backup_path
+        self.settings.protected_backup_path = str(target_dir)
+        save_settings(self.settings)
+        self.service.create_manual_backup()
+        status = self.service.backup_protection_status()
+        if status["last_error"] or not status["last_copy_path"]:
+            self.settings.protected_backup_path = previous_path
+            save_settings(self.settings)
+            messagebox.showerror(
+                "Protected Backup Failed",
+                status["last_error"] or "A.C.E. could not verify the protected backup copy.",
+                parent=parent,
+            )
+            return False
+
+        self.settings_protected_backup_var.set(str(target_dir))
+        save_device_backup_settings(
+            protected_backup_path=str(target_dir),
+            setup_completed=True,
+        )
+        self._set_status(f"Protected backups: {target_dir}")
+        messagebox.showinfo(
+            "Protected Backups Ready",
+            f"A compressed recovery backup was verified at:\n{status['last_copy_path']}",
+            parent=parent,
+        )
+        return True
+
+    @staticmethod
+    def _detect_removable_drive_roots() -> list[Path]:
+        try:
+            get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
+        except (AttributeError, OSError):
+            return []
+
+        removable_drive_type = 2
+        roots: list[Path] = []
+        for letter in string.ascii_uppercase:
+            root_text = f"{letter}:\\"
+            try:
+                if get_drive_type(root_text) == removable_drive_type and Path(root_text).exists():
+                    roots.append(Path(root_text))
+            except OSError:
+                continue
+        return roots
 
     def _prompt_and_authenticate_admin(self, *, title: str, prompt: str, allow_cancel: bool) -> bool:
         while True:
@@ -3927,6 +4182,18 @@ class InventoryApp(tk.Tk):
         if filename:
             self.settings_db_path_var.set(filename)
 
+    def _choose_protected_backup_for_settings(self) -> None:
+        current_value = self.settings_protected_backup_var.get().strip()
+        initial_dir = Path(current_value).expanduser() if current_value else Path.home()
+        selected = filedialog.askdirectory(
+            title="Choose or Create A.C.E. Protected Backup Folder",
+            initialdir=str(initial_dir),
+            mustexist=False,
+            parent=self,
+        )
+        if selected:
+            self.settings_protected_backup_var.set(str(Path(selected).expanduser()))
+
     def _save_settings(self) -> None:
         try:
             new_settings = AppSettings(
@@ -3934,6 +4201,7 @@ class InventoryApp(tk.Tk):
                 db_path=str(Path((self.settings_db_path_var.get().strip() or str(self.settings.database_path))).expanduser()),
                 backup_interval_ops=max(1, int(self.settings_backup_interval_var.get())),
                 overdue_days=self.settings.overdue_days,
+                protected_backup_path=self.settings_protected_backup_var.get().strip(),
             )
         except ValueError:
             self._show_error("Backup interval must be a whole number.")
@@ -3941,6 +4209,21 @@ class InventoryApp(tk.Tk):
 
         old_db_path = self.settings.database_path
         new_db_path = new_settings.database_path
+        protected_dir = new_settings.protected_backup_dir
+        if protected_dir is not None:
+            validation_file = protected_dir / ".ace_backup_write_test"
+            try:
+                protected_dir.mkdir(parents=True, exist_ok=True)
+                validation_file.write_text("A.C.E. backup location test", encoding="utf-8")
+                validation_file.unlink(missing_ok=True)
+            except OSError as exc:
+                try:
+                    validation_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self._show_error(f"A.C.E. cannot write to the protected backup folder:\n{protected_dir}\n\n{exc}")
+                return
+
         if new_db_path != old_db_path and not new_db_path.exists():
             copy_current = messagebox.askyesno(
                 "Create Database",
@@ -3951,6 +4234,10 @@ class InventoryApp(tk.Tk):
                 self.service.clone_database(new_db_path)
 
         save_settings(new_settings)
+        save_device_backup_settings(
+            protected_backup_path=(str(protected_dir) if protected_dir is not None else ""),
+            setup_completed=True,
+        )
         self.settings = new_settings
         self.service.replace_settings(new_settings)
         self._load_settings_into_form()
@@ -3958,9 +4245,30 @@ class InventoryApp(tk.Tk):
         self._show_info("Settings saved.")
 
     def _manual_backup(self) -> None:
+        def on_success(primary_path: Path) -> None:
+            status = self.service.backup_protection_status()
+            if status["last_copy_path"]:
+                self._show_info(
+                    "Compressed backup created in both locations.\n\n"
+                    f"Portable: {primary_path}\n"
+                    f"Protected: {status['last_copy_path']}"
+                )
+            elif status["configured_path"]:
+                self._show_info(
+                    "Portable backup created, but the protected location was unavailable.\n\n"
+                    f"Portable: {primary_path}\n"
+                    f"Protected error: {status['last_error'] or 'Unknown error'}"
+                )
+            else:
+                self._show_info(
+                    "Compressed portable backup created. No separate protected folder is configured.\n\n"
+                    f"Portable: {primary_path}"
+                )
+
         self._run_action(
             self.service.create_manual_backup,
-            success_message="Compressed backup created. A.C.E. retains the newest 10 backups.",
+            success_message=None,
+            on_success=on_success,
         )
 
     def _show_credits(self) -> None:
@@ -4063,6 +4371,9 @@ A.C.E. Manual
 6. Checkout / Return
 - The app opens with an admin code prompt before anyone can use checkout or return.
 - Det005 is the cadre administrator code and signs in as CADRE.
+- On the first login on each Windows device, choose a protected backup folder. A folder on another drive, this computer, or OneDrive is recommended.
+- The device remembers this setup, so the prompt does not appear on every launch. Change the location later in Settings.
+- The live inventory remains with A.C.E. on the portable drive. The protected folder receives separate compressed recovery copies.
 - Scan by typing or pasting a barcode and pressing Enter.
 - Each scan adds the barcode to a checkout list or return list instead of processing immediately.
 - Enter the cadet name using three boxes: Last, MI, First.
@@ -4093,9 +4404,10 @@ A.C.E. Manual
 
 10. Settings
 - Set the portable SQLite database location.
+- Set or change the protected backup folder.
 - Configure backup frequency. Backups are compressed ZIP files.
-- A.C.E. keeps the newest 10 backups and removes older compressed or legacy copies automatically.
-- Create Backup Now makes an extra compressed database backup immediately.
+- A.C.E. keeps the newest 10 backups in the portable and protected locations and removes older copies automatically.
+- Create Backup Now makes an extra compressed database backup and verifies the protected copy when configured.
 - Admin Security lets you add custom admin codes, deactivate them, delete them permanently, and switch the active admin session.
 - When signed in as CADRE, selecting an admin in Admin Security also reveals that saved code.
 - Transfer Device builds a single Windows EXE containing the current app snapshot and data for another device.
@@ -4156,6 +4468,9 @@ A.C.E. Manual
     def _load_settings_into_form(self) -> None:
         self.settings_org_name_var.set(self.settings.org_name)
         self.settings_db_path_var.set(str(self.settings.database_path))
+        self.settings_protected_backup_var.set(
+            str(self.settings.protected_backup_dir) if self.settings.protected_backup_dir is not None else ""
+        )
         self.settings_backup_interval_var.set(str(self.settings.backup_interval_ops))
         self.settings_overdue_days_var.set(str(self.settings.overdue_days))
 

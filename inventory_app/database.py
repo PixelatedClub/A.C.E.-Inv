@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
 import zipfile
 from datetime import datetime
@@ -148,6 +149,8 @@ class InventoryDatabase:
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
         self._write_counter = 0
+        self.last_protected_backup_path: Path | None = None
+        self.last_protected_backup_error: str | None = None
         ensure_app_directories(self.settings)
         self.initialize()
 
@@ -164,11 +167,14 @@ class InventoryDatabase:
 
     def initialize(self) -> None:
         ensure_app_directories(self.settings)
-        with self.connect() as connection:
+        connection = self.connect()
+        try:
             connection.executescript(SCHEMA_SQL)
             self._migrate_schema(connection)
             self._seed_catalog(connection)
             connection.commit()
+        finally:
+            connection.close()
         self.create_backup(reason="launch")
 
     def _migrate_schema(self, connection: sqlite3.Connection) -> None:
@@ -780,13 +786,37 @@ class InventoryDatabase:
         finally:
             temporary_db_path.unlink(missing_ok=True)
 
-        self._prune_old_backups()
+        self._prune_old_backups(self.settings.backup_dir)
+        self._copy_to_protected_backup(backup_path)
         return backup_path
 
-    def _prune_old_backups(self) -> None:
+    def _copy_to_protected_backup(self, backup_path: Path) -> Path | None:
+        self.last_protected_backup_path = None
+        self.last_protected_backup_error = None
+        protected_dir = self.settings.protected_backup_dir
+        if protected_dir is None:
+            return None
+
+        try:
+            if protected_dir == self.settings.backup_dir.resolve():
+                self.last_protected_backup_path = backup_path
+                return backup_path
+            protected_dir.mkdir(parents=True, exist_ok=True)
+            protected_path = protected_dir / backup_path.name
+            shutil.copy2(backup_path, protected_path)
+            self._prune_old_backups(protected_dir)
+            self.last_protected_backup_path = protected_path
+            return protected_path
+        except OSError as exc:
+            # The live USB database must remain usable even when a saved
+            # computer, network, or cloud-backed location is unavailable.
+            self.last_protected_backup_error = str(exc)
+            return None
+
+    def _prune_old_backups(self, backup_dir: Path) -> None:
         candidates = [
             path
-            for path in self.settings.backup_dir.glob("inventory_*")
+            for path in backup_dir.glob("inventory_*")
             if path.is_file() and path.suffix.casefold() in {".db", ".zip"}
         ]
         candidates.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)

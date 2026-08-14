@@ -143,6 +143,18 @@ class InventoryService:
     def create_manual_backup(self) -> Path:
         return self.database.create_backup(reason="manual")
 
+    def backup_protection_status(self) -> dict[str, Any]:
+        protected_dir = self.settings.protected_backup_dir
+        return {
+            "configured_path": str(protected_dir) if protected_dir is not None else "",
+            "last_copy_path": (
+                str(self.database.last_protected_backup_path)
+                if self.database.last_protected_backup_path is not None
+                else ""
+            ),
+            "last_error": self.database.last_protected_backup_error or "",
+        }
+
     def ensure_app_icon(self, source_png: Path) -> Path:
         return ensure_icon_file(source_png, self.settings.database_path.parent / "app_icon.ico")
 

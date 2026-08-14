@@ -12,11 +12,14 @@ portable_data/backups/
 portable_data/exports/
 portable_data/labels/
 portable_data/logs/
+A.C.E. Backups/
 
 # Build output
 build/
 dist/
 *.spec
+build_release_*/
+smoke_test_*/
 
 # Local release files - upload these through GitHub Releases
 release/*.exe
@@ -32,4 +35,3 @@ tmp/
 .idea/
 .DS_Store
 Thumbs.db
-

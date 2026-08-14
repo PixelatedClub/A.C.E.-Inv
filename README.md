@@ -24,7 +24,7 @@ The application starts with:
 - Scanner-based checkout and return
 - Cadet records and complete transaction history
 - Inventory, readiness, and accountability reports
-- Automatic compressed backups with retention controls
+- Dual-location compressed backups with retention controls
 - Portable, relative data paths for flash-drive use
 - Built-in index management for WINGS and custom items
 
@@ -50,7 +50,11 @@ The included `Launch A.C.E.cmd` starts the executable when one is present, or fa
 
 ## Data and privacy
 
-Operational data is stored locally in `portable_data/inventory.db`. Backups, exports, and generated labels are also written under `portable_data`. These paths are excluded by `.gitignore` because they may contain cadet or inventory information.
+Operational data is stored locally in `portable_data/inventory.db`. Portable backups, exports, and generated labels are also written under `portable_data`. On the first login on each Windows device, A.C.E. offers a protected backup location on another drive, the computer, or OneDrive. That device remembers the choice, so the setup screen does not appear on every launch. The newest 10 compressed backups are retained in both locations. A temporarily unavailable protected location never prevents the live USB database from opening.
+
+The device marker is stored under the current Windows user's local app data. It contains only the backup-folder path and setup status, never inventory or cadet data.
+
+These data paths are excluded by `.gitignore` because they may contain cadet or inventory information.
 
 Never upload an operational database, backup, export, or completed cadet report to a public repository.
 
