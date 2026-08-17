@@ -66,12 +66,12 @@ Never upload an operational database, backup, export, or completed cadet report 
 ## Documentation
 
 - `docs/A.C.E_Complete_Walkthrough_Brief_Style.pptx` - complete user walkthrough
-- `docs/A.C.E_Tera_Scanner_Test_Labels.pdf` - exact-size direct-print scanner acceptance labels
+- `docs/A.C.E_Tera_Scanner_Test_Labels.pdf` - complete 40-label PLS892 scanner acceptance sheet
 - `CATALOG_SOURCES.md` - equipment catalog source notes
 
 ## Barcode acceptance note
 
-The application generates Code 39 labels in the current `A` plus seven-digit format. The scanner test PDF places one label on each exact 2 x 1-inch PDF page so thermal-printer drivers do not have to shrink a letter-size sheet. Print at Actual Size or 100% with Fit To Page disabled. The page dimensions, quiet zones, and barcode module width are verified in software; a final physical print-and-scan test with the target Tera scanner and label printer is still required before operational use.
+The application generates Code 39 labels in the current `A` plus seven-digit format. Letter-size exports use the Premium Label Supply PLS892 geometry: four columns by ten rows, 2 x 1-inch labels, 0.25-inch left/right margins, 0.5-inch top/bottom margins, and no gaps. A 1,000-label export therefore produces exactly 25 sheets. Print at Actual Size or 100% with Fit To Page disabled. The page dimensions, quiet zones, and barcode module width are verified in software; a final physical print-and-scan test with the target printer and Tera scanner is still required before operational use.
 
 ## Alternate icons
 

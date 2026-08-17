@@ -8,8 +8,11 @@ from inventory_app.barcode_utils import (
     BARCODE_QUIET_ZONE,
     LABEL_HEIGHT,
     LABEL_WIDTH,
+    LETTER_HEIGHT,
+    LETTER_WIDTH,
     barcode_bars,
     write_direct_label_pdf,
+    write_label_pdf,
 )
 
 
@@ -42,6 +45,29 @@ class BarcodeLabelTests(unittest.TestCase):
 
         self.assertGreaterEqual(narrow_bar_pixels, 2.0)
         self.assertGreaterEqual(BARCODE_QUIET_ZONE, narrow_bar_points * 10)
+
+    def test_one_thousand_pls892_labels_fill_exactly_twenty_five_letter_pages(self) -> None:
+        record = {
+            "barcode_id": "A0000001",
+            "item_name": "PLS892 Test",
+            "category": "Scanner Test",
+            "variant": "2 x 1",
+            "item_type": "PLS892",
+            "total_quantity": 1,
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "pls892-1000-labels.pdf"
+            write_label_pdf(
+                path,
+                [dict(record) for _ in range(1000)],
+                "A.C.E.",
+                title="PLS892 1000 Label Verification",
+            )
+            content = path.read_bytes()
+
+        media_box = f"/MediaBox [0 0 {LETTER_WIDTH:.0f} {LETTER_HEIGHT:.0f}]".encode()
+        self.assertEqual(content.count(media_box), 25)
+        self.assertIn(b"/Count 25", content)
 
 
 if __name__ == "__main__":

@@ -4605,9 +4605,9 @@ A.C.E. Manual
 
 11. Printing Labels
 - PDFs are stored in the labels folder next to the database.
-- The PDF layout is sized for 2" x 1" labels on letter paper, 40 labels per sheet.
+- The PDF layout uses the Premium Label Supply PLS892 template: 2" x 1" labels on letter paper, 40 labels per sheet.
 - Print at Actual Size or 100% scale with Fit To Page disabled for best barcode accuracy.
-- The scanner acceptance PDF uses one exact 2" x 1" label per page for direct thermal-label printing.
+- The scanner acceptance PDF fills one complete PLS892 sheet so all four columns and ten rows can be checked.
 
 12. Data Notes
 - Identical items can share one barcode by increasing quantity.
