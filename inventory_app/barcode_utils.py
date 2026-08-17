@@ -69,6 +69,7 @@ PAGE_MARGIN_X = (LETTER_WIDTH - (LABEL_COLUMNS * LABEL_WIDTH)) / 2.0
 PAGE_MARGIN_Y = (LETTER_HEIGHT - (LABEL_ROWS * LABEL_HEIGHT)) / 2.0
 LABEL_GAP_X = 0.0
 LABEL_GAP_Y = 0.0
+BARCODE_QUIET_ZONE = 9.0
 
 
 def normalize_token(value: str, fallback: str = "STD") -> str:
@@ -257,6 +258,31 @@ def write_label_pdf(path: Path, records: list[dict[str, Any]], org_name: str, *,
     return path
 
 
+def write_direct_label_pdf(
+    path: Path,
+    records: list[dict[str, Any]],
+    org_name: str,
+    *,
+    title: str,
+) -> Path:
+    """Write one exact 2 x 1-inch thermal label per PDF page."""
+    if not records:
+        raise ValueError("At least one barcode record is required to build a label PDF.")
+
+    pages = [
+        "".join(_label_commands(record, org_name, 0.0, LABEL_HEIGHT, LABEL_WIDTH, LABEL_HEIGHT))
+        for record in records
+    ]
+    pdf_bytes = _assemble_pdf(
+        pages,
+        title=title,
+        page_width=LABEL_WIDTH,
+        page_height=LABEL_HEIGHT,
+    )
+    path.write_bytes(pdf_bytes)
+    return path
+
+
 def open_file(path: Path) -> None:
     try:
         os.startfile(path)  # type: ignore[attr-defined]
@@ -297,9 +323,9 @@ def _label_commands(record: dict[str, Any], org_name: str, x: float, y_top: floa
     qty_text_y = y_top - 10.0
     meta_text_y = y_top - 19.0
     barcode_height = 28.0
-    barcode_x = x + 6.0
+    barcode_x = x + BARCODE_QUIET_ZONE
     barcode_y = y_bottom + 12.0
-    barcode_draw_width = width - 12.0
+    barcode_draw_width = width - (2 * BARCODE_QUIET_ZONE)
     qty_text = f"Qty {record['total_quantity']}"
     item_name_text = _fit_text(str(record["item_name"]), max_width=width - 48.0, size=7.0)
     meta_text = _fit_text(
@@ -354,7 +380,13 @@ def _barcode_pdf_commands(barcode_value: str, x: float, y: float, width: float, 
     return commands
 
 
-def _assemble_pdf(page_contents: list[str], *, title: str) -> bytes:
+def _assemble_pdf(
+    page_contents: list[str],
+    *,
+    title: str,
+    page_width: float = LETTER_WIDTH,
+    page_height: float = LETTER_HEIGHT,
+) -> bytes:
     objects: list[bytes] = []
 
     def add_object(content: str | bytes) -> int:
@@ -379,7 +411,7 @@ def _assemble_pdf(page_contents: list[str], *, title: str) -> bytes:
         page_id = add_object(
             (
                 f"<< /Type /Page /Parent {pages_object_id} 0 R "
-                f"/MediaBox [0 0 {LETTER_WIDTH:.0f} {LETTER_HEIGHT:.0f}] "
+                f"/MediaBox [0 0 {page_width:.0f} {page_height:.0f}] "
                 f"/Resources << /Font << /F1 {font_regular_id} 0 R /F2 {font_bold_id} 0 R >> >> "
                 f"/Contents {content_id} 0 R >>"
             )

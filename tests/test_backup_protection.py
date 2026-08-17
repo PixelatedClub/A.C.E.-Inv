@@ -43,6 +43,31 @@ class BackupProtectionTests(unittest.TestCase):
                 )
                 self.assertIn('"protected_backup_path": ""', portable_config.read_text(encoding="utf-8"))
 
+    def test_alternate_icon_and_backup_preferences_are_preserved_together(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            device_dir = root / "device"
+            device_file = device_dir / "device_settings.json"
+
+            with (
+                patch.object(config, "DEVICE_SETTINGS_DIR", device_dir),
+                patch.object(config, "DEVICE_SETTINGS_PATH", device_file),
+            ):
+                self.assertTrue(config.save_alternate_icons_enabled(True))
+                self.assertTrue(
+                    config.save_device_backup_settings(
+                        protected_backup_path="D:/A.C.E. Backups",
+                        setup_completed=True,
+                    )
+                )
+
+                self.assertTrue(config.alternate_icons_enabled())
+                self.assertTrue(config.device_backup_setup_completed())
+                self.assertEqual(
+                    config.load_device_settings()["protected_backup_path"],
+                    "D:/A.C.E. Backups",
+                )
+
     def test_compressed_backup_is_copied_to_protected_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

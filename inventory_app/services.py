@@ -37,6 +37,22 @@ EASTER_EGG_CATALOG_VALUES = {
     "item_type": {str(entry["item_type"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
     "item_name": {str(entry["item_name"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
 }
+RANK_CATALOG_VERSION = "rank-catalog-v1"
+RANK_FAMILIES = (
+    ("SB", "Soft Blues Rank", "Soft Blues Ranks"),
+    ("HB", "Hard Blues Rank", "Hard Blues Ranks"),
+    ("OCP", "OCP Rank Patch", "OCP Rank Patches"),
+)
+RANKS = (
+    ("GMC100", "GMC 100 (C/4C)"),
+    ("GMC200", "GMC 200 (C/3C)"),
+    ("C2LT", "C/2d Lt"),
+    ("C1LT", "C/1st Lt"),
+    ("CCAPT", "C/Capt"),
+    ("CMAJ", "C/Maj"),
+    ("CLTCOL", "C/Lt Col"),
+    ("CCOL", "C/Col"),
+)
 EASTER_EGG_EXPORT_PROFILES = [
     {
         "ace_name": "Heart",
@@ -132,6 +148,7 @@ class InventoryService:
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
         self.database = InventoryDatabase(settings)
+        self._seed_rank_catalog()
 
     def replace_settings(self, settings: AppSettings) -> None:
         self.settings = settings
@@ -157,6 +174,55 @@ class InventoryService:
 
     def ensure_app_icon(self, source_png: Path) -> Path:
         return ensure_icon_file(source_png, self.settings.database_path.parent / "app_icon.ico")
+
+    def _seed_rank_catalog(self) -> None:
+        connection = self.database.connect()
+        try:
+            already_applied = connection.execute(
+                "SELECT 1 FROM ace_feature_flags WHERE feature_key = ?",
+                (RANK_CATALOG_VERSION,),
+            ).fetchone()
+            if already_applied:
+                return
+
+            for family_code, item_name, subcategory in RANK_FAMILIES:
+                for rank_code, rank_name in RANKS:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO wings_catalog(
+                            item_no, item_name, size, category, subcategory, sex,
+                            stock_number, uom, writeoffs, source, is_wings
+                        ) VALUES (?, ?, ?, 'Insignia', ?, '', '', 'EA', '',
+                                  'A.C.E. Rank Catalog', 0)
+                        """,
+                        (
+                            f"LOCAL-RANK-{family_code}-{rank_code}",
+                            item_name,
+                            rank_name,
+                            subcategory,
+                        ),
+                    )
+                    for kind, value in (
+                        ("category", "Insignia"),
+                        ("variant", rank_name),
+                        ("item_type", subcategory),
+                        ("item_name", item_name),
+                    ):
+                        connection.execute(
+                            """
+                            INSERT OR IGNORE INTO catalog_values(kind, value, sort_order)
+                            VALUES (?, ?, 850)
+                            """,
+                            (kind, value),
+                        )
+
+            connection.execute(
+                "INSERT INTO ace_feature_flags(feature_key, applied_at) VALUES (?, ?)",
+                (RANK_CATALOG_VERSION, utc_now()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
 
     def authenticate_admin_code(self, code: str) -> dict[str, Any]:
         normalized_code = code.strip()
@@ -395,6 +461,41 @@ class InventoryService:
                 or str(row["value"]).strip().upper() in visible_item_values
             )
         ]
+
+    def list_catalog_field_values(self, field: str, *, category: str = "") -> list[str]:
+        allowed_fields = {
+            "category": ("category", "category"),
+            "subcategory": ("subcategory", "item_type"),
+            "size": ("size", "variant"),
+        }
+        field_config = allowed_fields.get(field.strip().lower())
+        if field_config is None:
+            raise InventoryError("Unsupported catalog autofill field.")
+        column, catalog_kind = field_config
+
+        conditions = [f"trim({column}) <> ''"]
+        params: list[str] = []
+        if column == "subcategory" and category.strip():
+            conditions.append("category = ? COLLATE NOCASE")
+            params.append(category.strip())
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT DISTINCT value
+                FROM (
+                    SELECT {column} AS value
+                    FROM wings_catalog
+                    WHERE {' AND '.join(conditions)}
+                    UNION
+                    SELECT value
+                    FROM catalog_values
+                    WHERE kind = ? AND trim(value) <> ''
+                )
+                ORDER BY value COLLATE NOCASE
+                """,
+                [*params, catalog_kind],
+            ).fetchall()
+        return [str(row["value"]).strip() for row in rows]
 
     def list_custom_index_items(self) -> list[dict[str, Any]]:
         with self.database.connect() as connection:
@@ -1310,21 +1411,6 @@ class InventoryService:
                         now,
                     ),
                 )
-                prefix = "ACE-SHORT"
-                barcode_text = str(preview["barcode_id"])
-                sequence_number = (
-                    int(barcode_text[1:])
-                    if barcode_text.startswith("A") and barcode_text[1:].isdigit()
-                    else int(barcode_text.split("-")[-1])
-                )
-                connection.execute(
-                    """
-                    INSERT INTO barcode_sequences(prefix, last_number)
-                    VALUES (?, ?)
-                    ON CONFLICT(prefix) DO UPDATE SET last_number = MAX(last_number, excluded.last_number)
-                    """,
-                    (prefix, sequence_number),
-                )
                 self._record_catalog_values(
                     connection,
                     preview["category"],
@@ -1414,6 +1500,70 @@ class InventoryService:
         payload = dict(item)
         payload["open_transactions"] = [dict(row) for row in open_transactions]
         return payload
+
+    def update_item(
+        self,
+        *,
+        barcode_id: str,
+        item_name: str,
+        category: str,
+        variant: str,
+        item_type: str,
+        total_quantity: int,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        barcode = barcode_id.strip().upper()
+        if not barcode:
+            raise InventoryError("Select a barcode to edit first.")
+
+        quantity = self._validate_quantity(total_quantity, field_name="Total quantity")
+        category = self._clean_lookup(category, "Category")
+        variant = self._clean_lookup(variant, "Variant")
+        item_type = self._clean_lookup(item_type, "Item type")
+        item_name = self._clean_item_name(item_name) or self._suggest_item_name(
+            category, variant, item_type
+        )
+
+        with self.database.connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = ?", (barcode,)
+            ).fetchone()
+            if existing is None:
+                raise InventoryError("That barcode no longer exists.")
+
+            checked_out = self._open_checkout_count(connection, barcode)
+            if quantity < checked_out:
+                raise InventoryError(
+                    f"Total quantity cannot be below the {checked_out} unit(s) currently checked out."
+                )
+
+            connection.execute(
+                """
+                UPDATE items
+                SET item_name = ?, category = ?, variant = ?, item_type = ?,
+                    total_quantity = ?, notes = ?, updated_at = ?
+                WHERE barcode_id = ?
+                """,
+                (
+                    item_name,
+                    category,
+                    variant,
+                    item_type,
+                    quantity,
+                    notes.strip(),
+                    utc_now(),
+                    barcode,
+                ),
+            )
+            self._record_catalog_values(connection, category, variant, item_type, item_name)
+            self._sync_item_state(connection, barcode)
+            updated = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = ?", (barcode,)
+            ).fetchone()
+            connection.commit()
+
+        self.database.note_write()
+        return dict(updated)
 
     def create_manual_item(
         self,
@@ -1567,24 +1717,16 @@ class InventoryService:
         variant = self._clean_lookup(variant, "Variant")
         item_type = self._clean_lookup(item_type, "Item type")
         item_name = self._clean_item_name(item_name) or self._suggest_item_name(category, variant, item_type)
-        prefix = "ACE-SHORT"
         created_records: list[dict[str, Any]] = []
 
         with self.database.connect() as connection:
-            last_number_row = connection.execute(
-                "SELECT last_number FROM barcode_sequences WHERE prefix = ?",
-                (prefix,),
-            ).fetchone()
-            sequence_number = last_number_row["last_number"] + 1 if last_number_row else 1
-
             for _ in range(label_count):
-                barcode_id = compose_barcode(category, variant, item_type, sequence_number)
-                while connection.execute(
-                    "SELECT 1 FROM items WHERE barcode_id = ?",
-                    (barcode_id,),
-                ).fetchone():
-                    sequence_number += 1
-                    barcode_id = compose_barcode(category, variant, item_type, sequence_number)
+                barcode_id = self._next_barcode_for_prefix(
+                    connection,
+                    category=category,
+                    variant=variant,
+                    item_type=item_type,
+                )
 
                 now = utc_now()
                 connection.execute(
@@ -1619,16 +1761,6 @@ class InventoryService:
                         "status": "Available",
                     }
                 )
-                sequence_number += 1
-
-            connection.execute(
-                """
-                INSERT INTO barcode_sequences(prefix, last_number)
-                VALUES (?, ?)
-                ON CONFLICT(prefix) DO UPDATE SET last_number = excluded.last_number
-                """,
-                (prefix, sequence_number - 1),
-            )
             self._record_catalog_values(connection, category, variant, item_type, item_name)
             connection.commit()
 
@@ -3326,17 +3458,25 @@ class InventoryService:
         variant: str,
         item_type: str,
     ) -> str:
-        prefix = "ACE-SHORT"
-        last_number_row = connection.execute(
-            "SELECT last_number FROM barcode_sequences WHERE prefix = ?",
-            (prefix,),
-        ).fetchone()
-        sequence_number = last_number_row["last_number"] + 1 if last_number_row else 1
-        barcode_id = compose_barcode(category, variant, item_type, sequence_number)
-        while connection.execute("SELECT 1 FROM items WHERE barcode_id = ?", (barcode_id,)).fetchone():
+        rows = connection.execute(
+            """
+            SELECT barcode_id
+            FROM items
+            WHERE barcode_id GLOB 'A[0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+            ORDER BY barcode_id
+            """
+        ).fetchall()
+        sequence_number = 1
+        for row in rows:
+            used_number = int(str(row["barcode_id"])[1:])
+            if used_number < sequence_number:
+                continue
+            if used_number > sequence_number:
+                break
             sequence_number += 1
-            barcode_id = compose_barcode(category, variant, item_type, sequence_number)
-        return barcode_id
+        if sequence_number <= 9_999_999:
+            return compose_barcode(category, variant, item_type, sequence_number)
+        raise InventoryError("No unused A.C.E. barcode numbers remain.")
 
     @staticmethod
     def _validate_quantity(quantity: int, *, field_name: str = "Quantity") -> int:

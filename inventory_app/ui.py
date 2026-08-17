@@ -19,7 +19,9 @@ from PIL import Image, ImageSequence, ImageTk
 from .config import (
     APP_TITLE,
     AppSettings,
+    alternate_icons_enabled,
     device_backup_setup_completed,
+    save_alternate_icons_enabled,
     save_device_backup_settings,
     save_settings,
 )
@@ -81,6 +83,8 @@ SUIT_ICON_FILENAMES = {
 
 NORMAL_SUIT_ICON_KEYS = ("club", "diamond", "heart", "spade")
 RARE_SUIT_ICON_KEYS = ("evil_clubs", "diamond_emote", "heart_rage", "shades_spades")
+NORMAL_RARE_ICON_ODDS = 4000
+ALTERNATE_RARE_ICON_ODDS = 4
 
 SUIT_ICON_SOURCE_PATHS = {
     "club": Path(r"D:\Aseprite\palettes\Club.png"),
@@ -144,6 +148,7 @@ class InventoryApp(tk.Tk):
         self.window_icon_image: tk.PhotoImage | None = None
         self.window_icon_cache: dict[str, tk.PhotoImage] = {}
         self.current_window_icon_key: str | None = None
+        self.alternate_icons_enabled = alternate_icons_enabled()
         self.startup_splash: tk.Toplevel | None = None
         self.startup_frame_label: tk.Label | None = None
         self.startup_frames: list[ImageTk.PhotoImage] = []
@@ -199,7 +204,12 @@ class InventoryApp(tk.Tk):
         available_rare_keys = [
             key for key in RARE_SUIT_ICON_KEYS if self._window_icon_path(key) is not None
         ]
-        if available_rare_keys and random.randrange(1000) == 0:
+        rare_icon_odds = (
+            ALTERNATE_RARE_ICON_ODDS
+            if self.alternate_icons_enabled
+            else NORMAL_RARE_ICON_ODDS
+        )
+        if available_rare_keys and random.randrange(rare_icon_odds) == 0:
             return random.choice(available_rare_keys)
         if available_normal_keys:
             return random.choice(available_normal_keys)
@@ -575,6 +585,9 @@ class InventoryApp(tk.Tk):
         )
         ttk.Button(actions, text="Clear Form", command=self._clear_item_form).grid(
             row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0)
+        )
+        ttk.Button(actions, text="Edit Selected Barcode", command=self._edit_selected_item).grid(
+            row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0)
         )
 
     def _build_generator_tab(self) -> None:
@@ -1661,17 +1674,45 @@ class InventoryApp(tk.Tk):
         ttk.Label(form, text="Size").grid(row=1, column=0, sticky="w")
         ttk.Entry(form, textvariable=size_var).grid(row=1, column=1, sticky="ew", padx=(8, 18), pady=4)
         ttk.Label(form, text="Category").grid(row=1, column=2, sticky="w")
-        ttk.Combobox(
+        category_combo = ttk.Combobox(
             form,
             textvariable=category_var,
-            values=[
-                "Accessories", "Awards", "Curriculum", "Footwear", "Insignia",
-                "Outerwear", "Pants/Skirt", "PT wear", "Shirts", "SROTC Specialty Items",
-            ],
-        ).grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=4)
+            values=self.service.list_catalog_field_values("category"),
+        )
+        category_combo.grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=4)
 
         ttk.Label(form, text="Subcategory").grid(row=2, column=0, sticky="w")
-        ttk.Entry(form, textvariable=subcategory_var).grid(row=2, column=1, sticky="ew", padx=(8, 18), pady=4)
+        subcategory_combo = ttk.Combobox(
+            form,
+            textvariable=subcategory_var,
+            values=self.service.list_catalog_field_values("subcategory"),
+        )
+        subcategory_combo.grid(row=2, column=1, sticky="ew", padx=(8, 18), pady=4)
+
+        def filter_combo_values(combo: ttk.Combobox, values: list[str]) -> None:
+            typed = combo.get().strip().casefold()
+            matches = [value for value in values if typed in value.casefold()]
+            combo.configure(values=matches or values)
+
+        def refresh_category_values(_event: tk.Event | None = None) -> None:
+            filter_combo_values(
+                category_combo,
+                self.service.list_catalog_field_values("category"),
+            )
+
+        def refresh_subcategory_values(_event: tk.Event | None = None) -> None:
+            filter_combo_values(
+                subcategory_combo,
+                self.service.list_catalog_field_values(
+                    "subcategory", category=category_var.get()
+                ),
+            )
+
+        category_combo.bind("<FocusIn>", refresh_category_values)
+        category_combo.bind("<KeyRelease>", refresh_category_values)
+        category_combo.bind("<<ComboboxSelected>>", refresh_subcategory_values)
+        subcategory_combo.bind("<FocusIn>", refresh_subcategory_values)
+        subcategory_combo.bind("<KeyRelease>", refresh_subcategory_values)
         ttk.Label(form, text="Sex").grid(row=2, column=2, sticky="w")
         ttk.Combobox(
             form,
@@ -1698,7 +1739,8 @@ class InventoryApp(tk.Tk):
             text=(
                 (
                     "A.C.E. assigns a LOCAL number so this item cannot be mistaken for an official WINGS record. "
-                    "Complete the same descriptive fields used by WINGS; the item remains excluded from WINGS exports."
+                    "Category and subcategory suggestions come from values already in use. New values are also allowed. "
+                    "The item remains excluded from WINGS exports."
                 )
                 if custom
                 else (
@@ -3539,6 +3581,115 @@ class InventoryApp(tk.Tk):
             return "ACCOUTREMENTS"
         return "BLUES"
 
+    def _edit_selected_item(self) -> None:
+        selection = self.items_tree.selection()
+        if not selection:
+            self._show_error("Select an inventory barcode to edit first.")
+            return
+
+        barcode_id = str(selection[0]).upper()
+        row = self.item_cache.get(barcode_id) or self.service.get_item(barcode_id)
+        if not row:
+            self._show_error("The selected barcode could not be loaded.")
+            return
+
+        window = tk.Toplevel(self)
+        window.title(f"Edit Barcode {barcode_id}")
+        window.transient(self)
+        window.grab_set()
+        window.minsize(600, 470)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        if self.window_icon_image is not None:
+            window.iconphoto(True, self.window_icon_image)
+
+        form = ttk.LabelFrame(window, text="Barcode and Inventory Details", padding=14)
+        form.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        form.columnconfigure(1, weight=1)
+        form.rowconfigure(7, weight=1)
+
+        item_name_var = tk.StringVar(window, value=str(row["item_name"]))
+        category_var = tk.StringVar(window, value=str(row["category"]))
+        variant_var = tk.StringVar(window, value=str(row["variant"]))
+        item_type_var = tk.StringVar(window, value=str(row["item_type"]))
+        total_var = tk.StringVar(window, value=str(row["total_quantity"]))
+
+        ttk.Label(form, text="Barcode").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Label(form, text=barcode_id, style="Accent.TLabel").grid(
+            row=0, column=1, sticky="w", padx=(10, 0), pady=4
+        )
+        ttk.Label(form, text="Item Name").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=item_name_var).grid(
+            row=1, column=1, sticky="ew", padx=(10, 0), pady=4
+        )
+        ttk.Label(form, text="Category").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Combobox(
+            form,
+            textvariable=category_var,
+            values=self.service.list_catalog_values("category"),
+        ).grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=4)
+        ttk.Label(form, text="Variant / Size").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Combobox(
+            form,
+            textvariable=variant_var,
+            values=self.service.list_catalog_values("variant"),
+        ).grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=4)
+        ttk.Label(form, text="Item Type / Subcategory").grid(
+            row=4, column=0, sticky="w", pady=4
+        )
+        ttk.Combobox(
+            form,
+            textvariable=item_type_var,
+            values=self.service.list_catalog_values("item_type"),
+        ).grid(row=4, column=1, sticky="ew", padx=(10, 0), pady=4)
+        ttk.Label(form, text="New Total Quantity").grid(
+            row=5, column=0, sticky="w", pady=4
+        )
+        ttk.Spinbox(form, from_=1, to=100000, textvariable=total_var, width=12).grid(
+            row=5, column=1, sticky="w", padx=(10, 0), pady=4
+        )
+        ttk.Label(
+            form,
+            text=(
+                f"Currently available: {row['available_quantity']} of {row['total_quantity']}. "
+                "The new total cannot be below the number currently checked out."
+            ),
+            style="Subtitle.TLabel",
+            wraplength=500,
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 8))
+        ttk.Label(form, text="Notes").grid(row=7, column=0, sticky="nw", pady=4)
+        notes_text = tk.Text(form, height=7, wrap="word")
+        notes_text.grid(row=7, column=1, sticky="nsew", padx=(10, 0), pady=4)
+        notes_text.insert("1.0", str(row.get("notes", "")))
+
+        def save_changes() -> None:
+            def on_success(result: dict[str, Any]) -> None:
+                window.destroy()
+                self._after_inventory_write(result)
+
+            self._run_action(
+                lambda: self.service.update_item(
+                    barcode_id=barcode_id,
+                    item_name=item_name_var.get(),
+                    category=category_var.get(),
+                    variant=variant_var.get(),
+                    item_type=item_type_var.get(),
+                    total_quantity=total_var.get(),
+                    notes=notes_text.get("1.0", "end-1c"),
+                ),
+                success_message=f"Barcode {barcode_id} was updated.",
+                on_success=on_success,
+            )
+
+        buttons = ttk.Frame(form)
+        buttons.grid(row=8, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(buttons, text="Cancel", command=window.destroy).grid(
+            row=0, column=0, padx=(0, 6)
+        )
+        ttk.Button(buttons, text="Save Changes", command=save_changes).grid(
+            row=0, column=1
+        )
+
     def _create_manual_item(self) -> None:
         self._run_action(
             lambda: self.service.create_manual_item(
@@ -4296,21 +4447,56 @@ class InventoryApp(tk.Tk):
         ).grid(row=0, column=0, pady=(0, 18))
         author_label = tk.Label(
             container,
-            text=quote_author,
+            text=f"{quote_author} (@pixelatedclub)",
             font=("Segoe UI", 18, "bold"),
             fg="#1f4f82",
             bg="#eef4fb",
-            cursor="hand2" if quote_action == "open_hidden_easter_egg_export" else "",
+            cursor="hand2",
         )
         author_label.grid(row=1, column=0, pady=(0, 8))
+        author_label.bind(
+            "<Button-1>",
+            lambda _event: self._toggle_alternate_icons(window),
+        )
         if quote_action == "open_hidden_easter_egg_export":
             # Diamo is the sweet one but she still scares me :D
-            author_label.bind("<Button-1>", lambda _event: self._open_hidden_easter_egg_export())
-          
-            close_row = 3
-        else:
-            close_row = 2
-        ttk.Button(container, text="Close", command=window.destroy).grid(row=close_row, column=0)
+            author_label.bind(
+                "<Shift-Button-1>",
+                lambda _event: self._open_hidden_easter_egg_export(),
+            )
+        mode_text = (
+            "Alternate icons ON - rare chance 1 in 4"
+            if self.alternate_icons_enabled
+            else "Alternate icons OFF - rare chance 1 in 4,000"
+        )
+        ttk.Label(
+            container,
+            text=f"{mode_text}\nClick the creator name to toggle.",
+            style="Subtitle.TLabel",
+            justify="center",
+        ).grid(row=2, column=0, pady=(0, 12))
+        ttk.Button(container, text="Close", command=window.destroy).grid(row=3, column=0)
+
+    def _toggle_alternate_icons(self, parent: tk.Misc) -> None:
+        enabled = not self.alternate_icons_enabled
+        if not save_alternate_icons_enabled(enabled):
+            messagebox.showerror(
+                "Alternate Icons",
+                "A.C.E. could not save the alternate-icon setting on this device.",
+                parent=parent,
+            )
+            return
+
+        self.alternate_icons_enabled = enabled
+        self._apply_window_icon_choice(self._random_window_icon_key())
+        odds = ALTERNATE_RARE_ICON_ODDS if enabled else NORMAL_RARE_ICON_ODDS
+        mode = "enabled" if enabled else "disabled"
+        messagebox.showinfo(
+            "Alternate Icons",
+            f"Alternate icons are {mode}. The rare icon chance is now 1 in {odds:,} per launch.",
+            parent=parent,
+        )
+        parent.destroy()
 
     def _open_hidden_easter_egg_export(self) -> None:
         self._run_action(
@@ -4328,6 +4514,7 @@ A.C.E. Manual
 
 2. Items Tab
 - Create Manual Item adds a barcode record directly.
+- Edit Selected Barcode changes the selected item's description, classification, notes, or total quantity without replacing its barcode.
 - Restock Barcode increases quantity for an existing barcode.
 - Set Available, Mark Lost, and Retire update status.
 - Delete Permanently removes the barcode and its checkout history from the program.
@@ -4354,6 +4541,8 @@ A.C.E. Manual
   subcategory, sex, stock number, UoM, and source.
 - Manually added WINGS items become available in Index search, Quick Find, and compliant exports.
 - Add Custom Item collects the same descriptive fields but assigns a LOCAL number and excludes it from WINGS exports.
+- Category and subcategory fields suggest values already used in the catalog or inventory while still allowing new values.
+- The local rank catalog includes Soft Blues, Hard Blues, and OCP patches from GMC 100 through C/Col.
 - WINGS rows are reference records and do not mean an item is currently stocked.
 - Click a row to select it, or use Ctrl-click and Shift-click to select multiple rows.
 - Delete Selected from Index hides official catalog rows and permanently deletes selected custom rows.
@@ -4412,14 +4601,17 @@ A.C.E. Manual
 - When signed in as CADRE, selecting an admin in Admin Security also reveals that saved code.
 - Transfer Device builds a single Windows EXE containing the current app snapshot and data for another device.
 - Credits opens the project credit screen.
+- In Credits, click @pixelatedclub to toggle alternate icon mode. Rare icons use 1-in-4 odds in alternate mode and 1-in-4,000 odds normally.
 
 11. Printing Labels
 - PDFs are stored in the labels folder next to the database.
 - The PDF layout is sized for 2" x 1" labels on letter paper, 40 labels per sheet.
 - Print at Actual Size or 100% scale with Fit To Page disabled for best barcode accuracy.
+- The scanner acceptance PDF uses one exact 2" x 1" label per page for direct thermal-label printing.
 
 12. Data Notes
 - Identical items can share one barcode by increasing quantity.
+- New generated barcodes use the lowest currently unused A-number.
 - The system blocks negative inventory.
 - Deleting an item permanently removes that barcode and its transactions.
 """).strip()

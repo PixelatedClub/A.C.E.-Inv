@@ -132,10 +132,27 @@ def device_backup_setup_completed() -> bool:
 
 
 def save_device_backup_settings(*, protected_backup_path: str, setup_completed: bool) -> bool:
-    payload = {
-        "backup_setup_completed": bool(setup_completed),
-        "protected_backup_path": protected_backup_path.strip(),
-    }
+    payload = load_device_settings()
+    payload.update(
+        {
+            "backup_setup_completed": bool(setup_completed),
+            "protected_backup_path": protected_backup_path.strip(),
+        }
+    )
+    return _save_device_settings(payload)
+
+
+def alternate_icons_enabled() -> bool:
+    return bool(load_device_settings().get("alternate_icons_enabled", False))
+
+
+def save_alternate_icons_enabled(enabled: bool) -> bool:
+    payload = load_device_settings()
+    payload["alternate_icons_enabled"] = bool(enabled)
+    return _save_device_settings(payload)
+
+
+def _save_device_settings(payload: dict[str, object]) -> bool:
     try:
         DEVICE_SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
         DEVICE_SETTINGS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")

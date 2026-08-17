@@ -128,6 +128,11 @@ CREATE TABLE IF NOT EXISTS hidden_index_items (
     hidden_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ace_feature_flags (
+    feature_key TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_wings_catalog_name ON wings_catalog(item_name);
 CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
