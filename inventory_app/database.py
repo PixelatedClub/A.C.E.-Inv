@@ -17,6 +17,7 @@ from .defaults import (
     ITEM_TYPE_ALIASES,
 )
 from .wings_catalog import WINGS_CATALOG
+from .wings_catalog_official_import import WINGS_OFFICIAL_IMPORT_ADDITIONS
 
 
 # Compatibility constants are intentionally empty in the clean deployment.
@@ -297,10 +298,11 @@ class InventoryDatabase:
                     row["item_no"], row["item_name"], row["size"], row["category"],
                     row["subcategory"], row["sex"], row["stock_number"], row["uom"],
                     row["writeoffs"],
-                    "WINGS 26-Feb-26" if str(row["item_no"]).isdigit() else "Local Index",
+                    row.get("source")
+                    or ("WINGS 26-Feb-26" if str(row["item_no"]).isdigit() else "Local Index"),
                     1 if str(row["item_no"]).isdigit() else 0,
                 )
-                for row in WINGS_CATALOG
+                for row in (*WINGS_CATALOG, *WINGS_OFFICIAL_IMPORT_ADDITIONS)
             ],
         )
         for order, value in enumerate(DEFAULT_CATEGORIES, start=1):

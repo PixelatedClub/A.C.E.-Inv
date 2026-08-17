@@ -7,3 +7,5 @@ The clean catalog is intended as a comprehensive detachment inventory starting p
 - AFROTCI 36-2010, Cadet Operations, current guidance memorandum: GMC ranks C/4C and C/3C; POC cadet officer ranks C/2d Lt through C/Col.
 
 The catalog intentionally includes issued uniform components and commonly controlled accoutrements. Cadre should remove locally unissued choices or add detachment-specific property when necessary.
+
+The official WINGS item-number index contains 493 unique numeric records. Seventy-two records that were absent from the original bundled index were added from the `Official Import` sheet in `Auburn Uniform Inventory Test.xlsm`; those rows retain their workbook source label in the database. The workbook contains no official records for men's Blues trousers in 39 Long, 40 Regular, 40 Long, or 41 Long, so A.C.E. does not guess item numbers for those sizes.

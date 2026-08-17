@@ -4479,18 +4479,7 @@ class InventoryApp(tk.Tk):
                 "<Shift-Button-1>",
                 lambda _event: self._open_hidden_easter_egg_export(),
             )
-        mode_text = (
-            "Alternate icons ON - rare chance 1 in 4"
-            if self.alternate_icons_enabled
-            else "Alternate icons OFF - rare chance 1 in 4,000"
-        )
-        ttk.Label(
-            container,
-            text=f"{mode_text}\nClick the creator name to toggle.",
-            style="Subtitle.TLabel",
-            justify="center",
-        ).grid(row=2, column=0, pady=(0, 12))
-        ttk.Button(container, text="Close", command=window.destroy).grid(row=3, column=0)
+        ttk.Button(container, text="Close", command=window.destroy).grid(row=2, column=0)
 
     def _toggle_alternate_icons(self, parent: tk.Misc) -> None:
         enabled = not self.alternate_icons_enabled

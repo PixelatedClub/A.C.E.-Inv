@@ -20,6 +20,7 @@ The application starts with:
 
 - Smart equipment search with item-specific sizes and configurations
 - WINGS inventory import and ordered Excel export
+- Complete 493-item official WINGS catalog, including the Auburn inventory workbook additions
 - Compact barcode generation for 1 x 2-inch labels
 - In-place editing of existing barcode records and their total quantities
 - Lowest-unused-number allocation for new A.C.E. barcodes
