@@ -71,12 +71,28 @@ PAGE_MARGIN_Y = (LETTER_HEIGHT - (LABEL_ROWS * LABEL_HEIGHT)) / 2.0
 LABEL_GAP_X = 0.0
 LABEL_GAP_Y = 0.0
 BARCODE_QUIET_ZONE = 9.0
+SCANNED_BARCODE_PATTERN = re.compile(
+    r"(?<![A-Z0-9])(?:A[0-9]{7}|W[0-9A-Z]{7})(?![A-Z0-9])",
+    re.IGNORECASE,
+)
 
 
 def normalize_token(value: str, fallback: str = "STD") -> str:
     token = re.sub(r"[^A-Za-z0-9]+", "-", value.strip().upper())
     token = re.sub(r"-{2,}", "-", token).strip("-")
     return token or fallback
+
+
+def extract_scanned_barcode(raw_scan: str) -> str:
+    """Extract one A.C.E. or WINGS barcode from scanner prefix/suffix noise."""
+    matches = list(
+        dict.fromkeys(match.group(0).upper() for match in SCANNED_BARCODE_PATTERN.finditer(raw_scan))
+    )
+    if not matches:
+        raise ValueError("The scan did not contain a valid A.C.E. barcode.")
+    if len(matches) > 1:
+        raise ValueError("The scan contained multiple different barcodes. Scan one label at a time.")
+    return matches[0]
 
 
 def compose_barcode(category: str, variant: str, item_type: str, sequence: int) -> str:

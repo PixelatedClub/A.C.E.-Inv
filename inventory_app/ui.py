@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageSequence, ImageTk
 
+from .barcode_utils import extract_scanned_barcode
 from .config import (
     APP_TITLE,
     AppSettings,
@@ -3957,8 +3958,15 @@ class InventoryApp(tk.Tk):
         self._on_label_library_selected()
 
     def _queue_checkout_barcode(self, _event: tk.Event | None = None) -> None:
-        barcode = self.checkout_scan_var.get().strip().upper()
-        if not barcode:
+        raw_scan = self.checkout_scan_var.get()
+        if not raw_scan.strip():
+            return
+        try:
+            barcode = extract_scanned_barcode(raw_scan)
+        except ValueError as exc:
+            self.checkout_scan_var.set("")
+            self._show_error(str(exc))
+            self._focus_checkout_scan()
             return
         try:
             quantity = max(1, int(self.checkout_qty_var.get()))
@@ -4089,8 +4097,15 @@ class InventoryApp(tk.Tk):
         self._focus_checkout_scan()
 
     def _queue_return_barcode(self, _event: tk.Event | None = None) -> None:
-        barcode = self.return_scan_var.get().strip().upper()
-        if not barcode:
+        raw_scan = self.return_scan_var.get()
+        if not raw_scan.strip():
+            return
+        try:
+            barcode = extract_scanned_barcode(raw_scan)
+        except ValueError as exc:
+            self.return_scan_var.set("")
+            self._show_error(str(exc))
+            self.return_scan_entry.focus_set()
             return
         try:
             quantity = max(1, int(self.return_qty_var.get()))
@@ -4564,6 +4579,7 @@ A.C.E. Manual
 - The device remembers this setup, so the prompt does not appear on every launch. Change the location later in Settings.
 - The live inventory remains with A.C.E. on the portable drive. The protected folder receives separate compressed recovery copies.
 - Scan by typing or pasting a barcode and pressing Enter.
+- Scanner-added timestamps or other prefix/suffix text are removed automatically when one valid barcode is present.
 - Each scan adds the barcode to a checkout list or return list instead of processing immediately.
 - Enter the cadet name using three boxes: Last, MI, First.
 - Cadet email only needs to be a valid email address with an @ symbol.
