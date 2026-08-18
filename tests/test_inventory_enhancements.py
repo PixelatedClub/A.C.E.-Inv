@@ -6,19 +6,18 @@ import gc
 from pathlib import Path
 
 from inventory_app.config import AppSettings
-from inventory_app.services import InventoryError, InventoryService
+from inventory_app.services import InventoryError, InventoryService, RANK_CATALOG_VERSION
 
 
 class InventoryEnhancementTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         root = Path(self.temporary_directory.name)
-        self.service = InventoryService(
-            AppSettings(
-                db_path=str(root / "portable" / "inventory.db"),
-                backup_interval_ops=1000,
-            )
+        self.settings = AppSettings(
+            db_path=str(root / "portable" / "inventory.db"),
+            backup_interval_ops=1000,
         )
+        self.service = InventoryService(self.settings)
 
     def tearDown(self) -> None:
         self.service = None  # type: ignore[assignment]
@@ -34,9 +33,9 @@ class InventoryEnhancementTests(unittest.TestCase):
             units_per_barcode=quantity,
         )
 
-    def test_rank_catalog_separates_mens_and_womens_soft_blues(self) -> None:
+    def test_rank_catalog_uses_official_wings_cloth_ranks(self) -> None:
         with self.service.database.connect() as connection:
-            rows = connection.execute(
+            local_rows = connection.execute(
                 """
                 SELECT item_no, item_name, size, subcategory, sex
                 FROM wings_catalog
@@ -44,19 +43,119 @@ class InventoryEnhancementTests(unittest.TestCase):
                 ORDER BY item_no
                 """
             ).fetchall()
+            official_cloth_rows = connection.execute(
+                """
+                SELECT item_no, item_name, size, sex
+                FROM wings_catalog
+                WHERE item_no IN ('867', '868', '869', '870', '871', '872',
+                                  '873', '874', '875', '876', '877', '878')
+                  AND is_wings = 1
+                ORDER BY CAST(item_no AS INTEGER)
+                """
+            ).fetchall()
 
-        self.assertEqual(len(rows), 32)
-        self.assertEqual(len({row["item_name"] for row in rows}), 4)
-        self.assertEqual(len({row["size"] for row in rows}), 8)
-        self.assertEqual(len({row["subcategory"] for row in rows}), 4)
+        self.assertEqual(len(local_rows), 20)
+        self.assertEqual(len({row["item_name"] for row in local_rows}), 4)
+        self.assertEqual(len({row["size"] for row in local_rows}), 8)
+        self.assertEqual(len({row["subcategory"] for row in local_rows}), 4)
 
-        mens_soft_blues = [row for row in rows if row["item_no"].startswith("LOCAL-RANK-SBM-")]
-        womens_soft_blues = [row for row in rows if row["item_no"].startswith("LOCAL-RANK-SBW-")]
-        self.assertEqual(len(mens_soft_blues), 8)
-        self.assertEqual(len(womens_soft_blues), 8)
-        self.assertTrue(all(row["sex"] == "M" for row in mens_soft_blues))
-        self.assertTrue(all(row["sex"] == "F" for row in womens_soft_blues))
-        self.assertNotIn("Soft Blues Rank", {row["item_name"] for row in rows})
+        mens_local_cloth = [row for row in local_rows if row["item_no"].startswith("LOCAL-RANK-SBM-")]
+        womens_local_cloth = [row for row in local_rows if row["item_no"].startswith("LOCAL-RANK-SBW-")]
+        self.assertEqual(len(mens_local_cloth), 2)
+        self.assertEqual(len(womens_local_cloth), 2)
+        self.assertTrue(all(row["sex"] == "M" for row in mens_local_cloth))
+        self.assertTrue(all(row["sex"] == "F" for row in womens_local_cloth))
+        self.assertTrue(all("Cloth Blues" in row["item_name"] for row in mens_local_cloth + womens_local_cloth))
+
+        self.assertEqual(len(official_cloth_rows), 12)
+        self.assertEqual({row["sex"] for row in official_cloth_rows}, {"F", "M"})
+        self.assertTrue(all("CLOTH" in row["item_name"] for row in official_cloth_rows))
+        self.assertFalse(
+            any("Soft Blues" in row["item_name"] for row in local_rows + official_cloth_rows)
+        )
+
+    def test_legacy_soft_blues_inventory_migrates_to_official_wings_item(self) -> None:
+        with self.service.database.connect() as connection:
+            connection.execute("DELETE FROM ace_feature_flags WHERE feature_key = ?", (RANK_CATALOG_VERSION,))
+            connection.execute(
+                """
+                INSERT INTO wings_catalog(
+                    item_no, item_name, size, category, subcategory, sex,
+                    stock_number, uom, writeoffs, source, is_wings
+                ) VALUES (
+                    'LOCAL-RANK-SBM-C2LT', 'Men''s Soft Blues Rank', 'C/2d Lt',
+                    'Insignia', 'Men''s Soft Blues Ranks', 'M', '', 'EA', '',
+                    'A.C.E. Rank Catalog', 0
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO items(
+                    barcode_id, wings_item_no, item_name, category, variant, item_type,
+                    status, notes, total_quantity, available_quantity, created_at, updated_at
+                ) VALUES (
+                    'A0000001', 'LOCAL-RANK-SBM-C2LT', 'Men''s Soft Blues Rank',
+                    'Insignia', 'C/2D LT', 'Men''s Soft Blues Ranks', 'Available',
+                    'Counted stock', 5, 5, '2026-08-18T00:00:00', '2026-08-18T00:00:00'
+                )
+                """
+            )
+            connection.commit()
+
+        self.service.checkout_item(
+            barcode_id="A0000001",
+            cadet_name="Tester, A, Cadet",
+            cadet_email="tester@example.com",
+            quantity=2,
+            approved_by={"role": "CADRE", "display_name": "CADRE", "admin_id": None},
+        )
+
+        self.service = InventoryService(self.settings)
+
+        with self.service.database.connect() as connection:
+            item = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = 'A0000001'"
+            ).fetchone()
+            open_transactions = connection.execute(
+                "SELECT COUNT(*) FROM transactions WHERE barcode_id = 'A0000001' AND return_time IS NULL"
+            ).fetchone()[0]
+            local_catalog_row = connection.execute(
+                "SELECT 1 FROM wings_catalog WHERE item_no = 'LOCAL-RANK-SBM-C2LT'"
+            ).fetchone()
+
+        self.assertEqual(item["wings_item_no"], "878")
+        self.assertEqual(item["item_name"], "INSIGNIA,RANK,OFFICER MALE CLOTH")
+        self.assertEqual(item["variant"], "C/2ND LT")
+        self.assertEqual(item["item_type"], "INSIGNIA,RANK,OFFICER MALE CLOTH")
+        self.assertEqual(item["total_quantity"], 5)
+        self.assertEqual(item["available_quantity"], 3)
+        self.assertIn("Counted stock", item["notes"])
+        self.assertIn("official WINGS item 878", item["notes"])
+        self.assertEqual(open_transactions, 2)
+        self.assertIsNone(local_catalog_row)
+
+        export_row = next(
+            row for row in self.service.list_wings_export_rows() if row["Item No"] == "0000000878"
+        )
+        self.assertEqual(export_row["Qty Issued"], 2)
+        self.assertEqual(export_row["Qty Available"], 3)
+        self.assertEqual(export_row["Total in Inventory"], 5)
+
+    def test_official_cloth_rank_with_blank_subcategory_can_generate_inventory(self) -> None:
+        created = self.service.save_generated_barcode(
+            category="ignored",
+            variant="ignored",
+            item_type="ignored",
+            item_name="ignored",
+            wings_item_no="871",
+            units_per_barcode=4,
+        )
+
+        self.assertEqual(created["wings_item_no"], "871")
+        self.assertEqual(created["item_name"], "INSIGNIA,RANK,OFFICER FEMALE CLOTH")
+        self.assertEqual(created["variant"], "C/1ST LT")
+        self.assertEqual(created["item_type"], "INSIGNIA,RANK,OFFICER FEMALE CLOTH")
 
     def test_new_barcode_reuses_lowest_available_number(self) -> None:
         first = self._save_item(variant="First", item_name="First Test Item")

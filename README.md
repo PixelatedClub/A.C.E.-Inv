@@ -34,7 +34,7 @@ The application starts with:
 - Portable, relative data paths for flash-drive use
 - Built-in index management for WINGS and custom items
 - Custom-item category and subcategory suggestions based on values already in use
-- Preloaded men's Soft Blues, women's Soft Blues, Hard Blues, and OCP rank entries from GMC 100 through C/Col
+- Official WINGS male/female officer cloth ranks (items 867-878), plus local cloth GMC 100/200, Hard Blues, and OCP rank entries
 - Optional alternate app-icon mode hidden in the Credits screen
 
 ## Run the packaged application

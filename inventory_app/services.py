@@ -38,13 +38,7 @@ EASTER_EGG_CATALOG_VALUES = {
     "item_type": {str(entry["item_type"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
     "item_name": {str(entry["item_name"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
 }
-RANK_CATALOG_VERSION = "rank-catalog-v2-soft-blues-sex"
-RANK_FAMILIES = (
-    ("SBM", "Men's Soft Blues Rank", "Men's Soft Blues Ranks", "M"),
-    ("SBW", "Women's Soft Blues Rank", "Women's Soft Blues Ranks", "F"),
-    ("HB", "Hard Blues Rank", "Hard Blues Ranks", ""),
-    ("OCP", "OCP Rank Patch", "OCP Rank Patches", ""),
-)
+RANK_CATALOG_VERSION = "rank-catalog-v3-official-cloth"
 RANKS = (
     ("GMC100", "GMC 100 (C/4C)"),
     ("GMC200", "GMC 200 (C/3C)"),
@@ -55,6 +49,27 @@ RANKS = (
     ("CLTCOL", "C/Lt Col"),
     ("CCOL", "C/Col"),
 )
+GMC_RANKS = RANKS[:2]
+LOCAL_RANK_FAMILIES = (
+    ("SBM", "Men's Cloth Blues Rank", "Men's Cloth Blues Ranks", "M", GMC_RANKS),
+    ("SBW", "Women's Cloth Blues Rank", "Women's Cloth Blues Ranks", "F", GMC_RANKS),
+    ("HB", "Hard Blues Rank", "Hard Blues Ranks", "", RANKS),
+    ("OCP", "OCP Rank Patch", "OCP Rank Patches", "", RANKS),
+)
+OFFICIAL_CLOTH_RANK_ITEM_NOS = {
+    "LOCAL-RANK-SBW-CCOL": "867",
+    "LOCAL-RANK-SBW-CLTCOL": "868",
+    "LOCAL-RANK-SBW-CMAJ": "869",
+    "LOCAL-RANK-SBW-CCAPT": "870",
+    "LOCAL-RANK-SBW-C1LT": "871",
+    "LOCAL-RANK-SBW-C2LT": "872",
+    "LOCAL-RANK-SBM-CCOL": "873",
+    "LOCAL-RANK-SBM-CLTCOL": "874",
+    "LOCAL-RANK-SBM-CMAJ": "875",
+    "LOCAL-RANK-SBM-CCAPT": "876",
+    "LOCAL-RANK-SBM-C1LT": "877",
+    "LOCAL-RANK-SBM-C2LT": "878",
+}
 EASTER_EGG_EXPORT_PROFILES = [
     {
         "ace_name": "Heart",
@@ -187,6 +202,7 @@ class InventoryService:
             if already_applied:
                 return
 
+            now = utc_now()
             legacy_soft_blues_item_nos = [
                 f"LOCAL-RANK-SB-{rank_code}" for rank_code, _rank_name in RANKS
             ]
@@ -206,9 +222,77 @@ class InventoryService:
                 else:
                     connection.execute("DELETE FROM wings_catalog WHERE item_no = ?", (item_no,))
 
+            # The officer cloth ranks are official WINGS items 867-878. Move
+            # every existing local Soft Blues inventory line to its exact
+            # official record while retaining the barcode, quantities, notes,
+            # and all checkout history tied to that barcode.
+            for local_item_no, official_item_no in OFFICIAL_CLOTH_RANK_ITEM_NOS.items():
+                official = connection.execute(
+                    """
+                    SELECT item_no, item_name, size, category, subcategory
+                    FROM wings_catalog
+                    WHERE item_no = ? AND is_wings = 1
+                    """,
+                    (official_item_no,),
+                ).fetchone()
+                if official is None:
+                    continue
+                official_item_type = str(official["subcategory"] or official["item_name"])
+                linked_items = connection.execute(
+                    "SELECT barcode_id, notes FROM items WHERE wings_item_no = ?",
+                    (local_item_no,),
+                ).fetchall()
+                for item in linked_items:
+                    migration_note = (
+                        f"Mapped from local Soft Blues rank {local_item_no} "
+                        f"to official WINGS item {official_item_no}."
+                    )
+                    connection.execute(
+                        """
+                        UPDATE items
+                        SET wings_item_no = ?, item_name = ?, category = ?, variant = ?,
+                            item_type = ?, notes = ?, updated_at = ?
+                        WHERE barcode_id = ?
+                        """,
+                        (
+                            official["item_no"],
+                            official["item_name"],
+                            official["category"],
+                            official["size"],
+                            official_item_type,
+                            self._append_note(item["notes"], migration_note),
+                            now,
+                            item["barcode_id"],
+                        ),
+                    )
+                connection.execute("DELETE FROM hidden_index_items WHERE item_no = ?", (local_item_no,))
+                connection.execute("DELETE FROM wings_catalog WHERE item_no = ?", (local_item_no,))
+
+            # WINGS has no official cloth records for the GMC 100 and GMC 200
+            # rows. Keep those four entries local, but use Cloth terminology.
+            for family_code, item_name, subcategory, _sex, ranks in LOCAL_RANK_FAMILIES[:2]:
+                for rank_code, _rank_name in ranks:
+                    connection.execute(
+                        """
+                        UPDATE items
+                        SET item_name = ?, item_type = ?, updated_at = ?
+                        WHERE wings_item_no = ?
+                        """,
+                        (
+                            item_name,
+                            subcategory,
+                            now,
+                            f"LOCAL-RANK-{family_code}-{rank_code}",
+                        ),
+                    )
+
             for kind, value, item_column in (
                 ("item_name", "Soft Blues Rank", "item_name"),
+                ("item_name", "Men's Soft Blues Rank", "item_name"),
+                ("item_name", "Women's Soft Blues Rank", "item_name"),
                 ("item_type", "Soft Blues Ranks", "item_type"),
+                ("item_type", "Men's Soft Blues Ranks", "item_type"),
+                ("item_type", "Women's Soft Blues Ranks", "item_type"),
             ):
                 is_in_use = connection.execute(
                     f"SELECT 1 FROM items WHERE {item_column} = ? COLLATE NOCASE LIMIT 1",
@@ -220,15 +304,26 @@ class InventoryService:
                         (kind, value),
                     )
 
-            for family_code, item_name, subcategory, sex in RANK_FAMILIES:
-                for rank_code, rank_name in RANKS:
+            for family_code, item_name, subcategory, sex, ranks in LOCAL_RANK_FAMILIES:
+                for rank_code, rank_name in ranks:
                     connection.execute(
                         """
-                        INSERT OR IGNORE INTO wings_catalog(
+                        INSERT INTO wings_catalog(
                             item_no, item_name, size, category, subcategory, sex,
                             stock_number, uom, writeoffs, source, is_wings
                         ) VALUES (?, ?, ?, 'Insignia', ?, ?, '', 'EA', '',
                                   'A.C.E. Rank Catalog', 0)
+                        ON CONFLICT(item_no) DO UPDATE SET
+                            item_name = excluded.item_name,
+                            size = excluded.size,
+                            category = excluded.category,
+                            subcategory = excluded.subcategory,
+                            sex = excluded.sex,
+                            stock_number = excluded.stock_number,
+                            uom = excluded.uom,
+                            writeoffs = excluded.writeoffs,
+                            source = excluded.source,
+                            is_wings = excluded.is_wings
                         """,
                         (
                             f"LOCAL-RANK-{family_code}-{rank_code}",
@@ -254,7 +349,7 @@ class InventoryService:
 
             connection.execute(
                 "INSERT INTO ace_feature_flags(feature_key, applied_at) VALUES (?, ?)",
-                (RANK_CATALOG_VERSION, utc_now()),
+                (RANK_CATALOG_VERSION, now),
             )
             connection.commit()
         finally:
@@ -1326,7 +1421,7 @@ class InventoryService:
             wings_item_no = str(wings_record["item_no"])
             category = str(wings_record["category"])
             variant = str(wings_record["size"])
-            item_type = str(wings_record["subcategory"])
+            item_type = str(wings_record["subcategory"] or wings_record["item_name"])
             item_name = str(wings_record["item_name"])
         category = self._clean_lookup(category, "Category")
         variant = self._clean_lookup(variant, "Variant")
