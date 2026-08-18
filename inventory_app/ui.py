@@ -57,6 +57,7 @@ CREDIT_QUOTES = [
         "author": "Ethan Williams",
     },
     {"text": '"I made these quotes to procrastinate studying for finals."', "author": "Ethan Williams"},
+    {"text": '"if you find my first ever checkout you can contact me"', "author": "Ethan Williams"},
 ]
 
 SUIT_ICON_CODE_MAP = {
