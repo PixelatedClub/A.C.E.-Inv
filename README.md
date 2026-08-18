@@ -24,7 +24,8 @@ The application starts with:
 - Compact barcode generation for 1 x 2-inch labels
 - In-place editing of existing barcode records and their total quantities
 - Lowest-unused-number allocation for new A.C.E. barcodes
-- Scanner-based checkout and return
+- Scanner-based checkout plus a cadet-centered Returns tab
+- Explicit returning-cadet selection with individual or all-held-item returns
 - Permanent-issue and purchase disposition from each cadet's checked-out inventory
 - Cadet records and complete transaction history
 - Inventory, readiness, and accountability reports
@@ -76,7 +77,7 @@ Never upload an operational database, backup, export, or completed cadet report 
 
 The application generates Code 39 labels in the current `A` plus seven-digit format. Letter-size exports use the Premium Label Supply PLS892 geometry: four columns by ten rows, 2 x 1-inch labels, 0.25-inch left/right margins, 0.5-inch top/bottom margins, and no gaps. A 1,000-label export therefore produces exactly 25 sheets. Print at Actual Size or 100% with Fit To Page disabled. The page dimensions, quiet zones, and barcode module width are verified in software; a final physical print-and-scan test with the target printer and Tera scanner is still required before operational use.
 
-Checkout and return scans automatically extract one valid A.C.E. or WINGS barcode from scanner-added timestamps and other prefix/suffix text. Inputs containing no valid barcode or multiple different barcodes are rejected.
+Checkout scans and barcode selection in Returns automatically extract one valid A.C.E. or WINGS barcode from scanner-added timestamps and other prefix/suffix text. Returns first require selecting the cadet, then pull only that cadet's currently checked-out inventory so the exact checkout units can be returned. Inputs containing no valid barcode or multiple different barcodes are rejected.
 
 ## Alternate icons
 

@@ -2164,6 +2164,123 @@ class InventoryService:
             for row in rows
         ]
 
+    def return_cadet_items(
+        self,
+        *,
+        cadet_id: int,
+        transaction_ids: list[int],
+        approved_by: dict[str, Any] | None = None,
+        condition_notes: str = "",
+    ) -> list[dict[str, Any]]:
+        try:
+            cleaned_cadet_id = int(cadet_id)
+        except (TypeError, ValueError) as exc:
+            raise InventoryError("Select a valid saved cadet who is returning items.") from exc
+
+        cleaned_transaction_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for transaction_id in transaction_ids:
+            try:
+                cleaned_id = int(transaction_id)
+            except (TypeError, ValueError) as exc:
+                raise InventoryError("Select valid checked-out transaction rows.") from exc
+            if cleaned_id < 1 or cleaned_id in seen_ids:
+                continue
+            seen_ids.add(cleaned_id)
+            cleaned_transaction_ids.append(cleaned_id)
+        if not cleaned_transaction_ids:
+            raise InventoryError("Select at least one checked-out item to return.")
+
+        approval = self._normalize_admin_identity(approved_by)
+        placeholders = ", ".join("?" for _ in cleaned_transaction_ids)
+        with self.database.connect() as connection:
+            cadet = connection.execute(
+                "SELECT cadet_id, full_name, email FROM cadets WHERE cadet_id = ?",
+                (cleaned_cadet_id,),
+            ).fetchone()
+            if cadet is None:
+                raise InventoryError("Saved cadet record not found.")
+
+            rows = connection.execute(
+                f"""
+                SELECT
+                    t.transaction_id,
+                    t.barcode_id,
+                    t.cadet_id,
+                    t.cadet_name,
+                    t.cadet_email,
+                    t.checkout_time,
+                    t.return_time,
+                    t.condition_notes,
+                    i.item_name
+                FROM transactions t
+                JOIN items i ON i.barcode_id = t.barcode_id
+                WHERE t.transaction_id IN ({placeholders})
+                ORDER BY t.transaction_id
+                """,
+                cleaned_transaction_ids,
+            ).fetchall()
+            if len(rows) != len(cleaned_transaction_ids):
+                raise InventoryError("One or more selected checkout records no longer exist.")
+
+            for row in rows:
+                belongs_to_cadet = (
+                    row["cadet_id"] == cadet["cadet_id"]
+                    or (
+                        row["cadet_id"] is None
+                        and str(row["cadet_email"] or "").casefold()
+                        == str(cadet["email"] or "").casefold()
+                    )
+                )
+                if not belongs_to_cadet:
+                    raise InventoryError("Every selected return item must belong to the selected cadet.")
+                if row["return_time"] is not None:
+                    raise InventoryError("One or more selected items are no longer checked out.")
+
+            returned_at = utc_now()
+            cleaned_notes = " ".join(str(condition_notes).split())
+            affected_barcodes: set[str] = set()
+            for row in rows:
+                connection.execute(
+                    """
+                    UPDATE transactions
+                    SET return_time = ?, return_approved_by_admin_id = ?,
+                        return_approved_by_name = ?, return_approved_by_role = ?,
+                        return_approved_at = ?, disposition = 'Returned', condition_notes = ?
+                    WHERE transaction_id = ?
+                    """,
+                    (
+                        returned_at,
+                        approval["admin_id"],
+                        approval["approved_by_name"],
+                        approval["approved_by_role"],
+                        returned_at,
+                        self._append_note(row["condition_notes"], cleaned_notes),
+                        row["transaction_id"],
+                    ),
+                )
+                affected_barcodes.add(str(row["barcode_id"]))
+
+            for barcode in affected_barcodes:
+                self._sync_item_state(connection, barcode)
+            connection.commit()
+
+        self.database.note_write()
+        return [
+            {
+                "transaction_id": int(row["transaction_id"]),
+                "barcode_id": str(row["barcode_id"]),
+                "item_name": str(row["item_name"]),
+                "cadet_id": cleaned_cadet_id,
+                "cadet_name": str(cadet["full_name"]),
+                "cadet_email": str(cadet["email"]),
+                "checkout_time": str(row["checkout_time"]),
+                "return_time": returned_at,
+                "disposition": "Returned",
+            }
+            for row in rows
+        ]
+
     def delete_cadet(self, *, cadet_id: int) -> None:
         with self.database.connect() as connection:
             cadet = connection.execute(

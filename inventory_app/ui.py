@@ -127,9 +127,9 @@ class InventoryApp(tk.Tk):
         self.service = InventoryService(settings)
         self.current_admin: dict[str, Any] | None = None
         self.current_checkout_barcode: str | None = None
-        self.current_return_barcode: str | None = None
         self.generator_preview_record: dict[str, Any] | None = None
         self.selected_cadet_id: int | None = None
+        self.selected_return_cadet_id: int | None = None
         self.selected_admin_id: int | str | None = None
         self.report_columns: list[str] = []
         self.report_rows: list[dict[str, Any]] = []
@@ -139,7 +139,8 @@ class InventoryApp(tk.Tk):
         self.admin_cache: dict[str, dict[str, Any]] = {}
         self.label_print_quantity_cache: dict[str, int] = {}
         self.checkout_queue: dict[str, dict[str, Any]] = {}
-        self.return_queue: dict[str, dict[str, Any]] = {}
+        self.return_cadet_cache: dict[int, dict[str, Any]] = {}
+        self.return_cadet_details: dict[str, Any] | None = None
         self.category_combos: list[ttk.Combobox] = []
         self.variant_combos: list[ttk.Combobox] = []
         self.item_type_combos: list[ttk.Combobox] = []
@@ -353,9 +354,12 @@ class InventoryApp(tk.Tk):
         self.checkout_qty_var = tk.StringVar(value="1")
         self.checkout_summary_var = tk.StringVar(value="Scan or paste a barcode and press Enter to add it to the checkout list.")
 
+        self.return_cadet_search_var = tk.StringVar()
         self.return_scan_var = tk.StringVar()
         self.return_qty_var = tk.StringVar(value="1")
-        self.return_summary_var = tk.StringVar(value="Scan or paste a barcode and press Enter to add it to the return list.")
+        self.return_summary_var = tk.StringVar(
+            value="Search for and select the cadet who is returning items."
+        )
 
         self.report_type_var = tk.StringVar(value="Checked Out Items")
         self.report_summary_var = tk.StringVar(value="No report loaded yet.")
@@ -394,6 +398,7 @@ class InventoryApp(tk.Tk):
         self.index_tab = ttk.Frame(self.notebook, padding=12)
         self.wings_export_tab = ttk.Frame(self.notebook, padding=12)
         self.checkout_tab = ttk.Frame(self.notebook, padding=12)
+        self.returns_tab = ttk.Frame(self.notebook, padding=12)
         self.barcode_directory_tab = ttk.Frame(self.notebook, padding=12)
         self.cadets_tab = ttk.Frame(self.notebook, padding=12)
         self.reports_tab = ttk.Frame(self.notebook, padding=12)
@@ -404,7 +409,8 @@ class InventoryApp(tk.Tk):
         self.notebook.add(self.generator_tab, text="Barcode Generator")
         self.notebook.add(self.index_tab, text="Index")
         self.notebook.add(self.wings_export_tab, text="WINGS Export")
-        self.notebook.add(self.checkout_tab, text="Checkout / Return")
+        self.notebook.add(self.checkout_tab, text="Checkout")
+        self.notebook.add(self.returns_tab, text="Returns")
         self.notebook.add(self.barcode_directory_tab, text="Barcode Directory")
         self.notebook.add(self.cadets_tab, text="Cadets")
         self.notebook.add(self.reports_tab, text="Reports")
@@ -416,6 +422,7 @@ class InventoryApp(tk.Tk):
         self._build_index_tab()
         self._build_wings_export_tab()
         self._build_checkout_tab()
+        self._build_returns_tab()
         self._build_barcode_directory_tab()
         self._build_cadets_tab()
         self._build_reports_tab()
@@ -955,11 +962,10 @@ class InventoryApp(tk.Tk):
 
     def _build_checkout_tab(self) -> None:
         self.checkout_tab.columnconfigure(0, weight=1)
-        self.checkout_tab.columnconfigure(1, weight=1)
         self.checkout_tab.rowconfigure(0, weight=1)
 
-        checkout_frame = ttk.LabelFrame(self.checkout_tab, text="Checkout", padding=12)
-        checkout_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        checkout_frame = ttk.LabelFrame(self.checkout_tab, text="Checkout Items To A Cadet", padding=12)
+        checkout_frame.grid(row=0, column=0, sticky="nsew")
         checkout_frame.columnconfigure(0, weight=1)
         checkout_frame.rowconfigure(3, weight=1)
 
@@ -1042,64 +1048,132 @@ class InventoryApp(tk.Tk):
             row=0, column=2, sticky="ew", padx=(4, 0)
         )
 
-        return_frame = ttk.LabelFrame(self.checkout_tab, text="Return", padding=12)
+    def _build_returns_tab(self) -> None:
+        self.returns_tab.columnconfigure(0, weight=1)
+        self.returns_tab.columnconfigure(1, weight=2)
+        self.returns_tab.rowconfigure(0, weight=1)
+
+        cadet_frame = ttk.LabelFrame(self.returns_tab, text="1. Who Is Returning Items?", padding=12)
+        cadet_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        cadet_frame.columnconfigure(0, weight=1)
+        cadet_frame.rowconfigure(2, weight=1)
+
+        ttk.Label(
+            cadet_frame,
+            text="Search by cadet name or email, then select the returning cadet.",
+            wraplength=390,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        return_search_row = ttk.Frame(cadet_frame)
+        return_search_row.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        return_search_row.columnconfigure(0, weight=1)
+        self.return_cadet_search_entry = ttk.Entry(
+            return_search_row,
+            textvariable=self.return_cadet_search_var,
+        )
+        self.return_cadet_search_entry.grid(row=0, column=0, sticky="ew")
+        self.return_cadet_search_entry.bind("<Return>", lambda _event: self.refresh_return_cadets())
+        ttk.Button(return_search_row, text="Search", command=self.refresh_return_cadets).grid(
+            row=0, column=1, padx=(8, 0)
+        )
+
+        return_cadet_tree_frame = ttk.Frame(cadet_frame)
+        return_cadet_tree_frame.grid(row=2, column=0, sticky="nsew")
+        return_cadet_tree_frame.columnconfigure(0, weight=1)
+        return_cadet_tree_frame.rowconfigure(0, weight=1)
+        self.return_cadet_tree = self._create_tree(
+            return_cadet_tree_frame,
+            columns=["cadet_id", "full_name", "email", "open_items"],
+        )
+        self.return_cadet_tree.grid(row=0, column=0, sticky="nsew")
+        self.return_cadet_tree.bind("<<TreeviewSelect>>", self._on_return_cadet_selected)
+
+        return_frame = ttk.LabelFrame(
+            self.returns_tab,
+            text="2. Select Items From That Cadet's Inventory",
+            padding=12,
+        )
         return_frame.grid(row=0, column=1, sticky="nsew")
         return_frame.columnconfigure(0, weight=1)
         return_frame.rowconfigure(3, weight=1)
 
-        ttk.Label(return_frame, text="Scan Barcode").grid(row=0, column=0, sticky="w")
-        return_scan_row = ttk.Frame(return_frame)
-        return_scan_row.grid(row=1, column=0, sticky="ew", pady=(4, 10))
-        return_scan_row.columnconfigure(0, weight=1)
-        self.return_scan_entry = ttk.Entry(return_scan_row, textvariable=self.return_scan_var, style="Scan.TEntry")
-        self.return_scan_entry.grid(row=0, column=0, sticky="ew")
-        self.return_scan_entry.bind("<Return>", self._queue_return_barcode)
-        ttk.Label(return_scan_row, text="Units To Add").grid(row=0, column=1, padx=(10, 6))
-        ttk.Spinbox(return_scan_row, from_=1, to=1000, textvariable=self.return_qty_var, width=8).grid(
-            row=0, column=2, sticky="w"
+        ttk.Label(
+            return_frame,
+            textvariable=self.return_summary_var,
+            wraplength=820,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        scan_row = ttk.Frame(return_frame)
+        scan_row.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        scan_row.columnconfigure(1, weight=1)
+        ttk.Label(scan_row, text="Scan Held Barcode").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.return_scan_entry = ttk.Entry(scan_row, textvariable=self.return_scan_var, style="Scan.TEntry")
+        self.return_scan_entry.grid(row=0, column=1, sticky="ew")
+        self.return_scan_entry.bind("<Return>", self._select_scanned_return_items)
+        ttk.Label(scan_row, text="Units").grid(row=0, column=2, padx=(10, 6))
+        ttk.Spinbox(scan_row, from_=1, to=1000, textvariable=self.return_qty_var, width=8).grid(
+            row=0, column=3, sticky="w"
         )
-        ttk.Button(return_scan_row, text="Add To List", command=self._queue_return_barcode).grid(
-            row=0, column=3, padx=(10, 0)
+        ttk.Button(scan_row, text="Select Held Item", command=self._select_scanned_return_items).grid(
+            row=0, column=4, padx=(10, 0)
         )
 
-        ttk.Label(return_frame, textvariable=self.return_summary_var, wraplength=560, justify="left").grid(
-            row=2, column=0, sticky="w", pady=(0, 12)
-        )
+        ttk.Label(
+            return_frame,
+            text="Each row below is one unit currently checked out to the selected cadet.",
+        ).grid(row=2, column=0, sticky="w", pady=(0, 6))
 
-        return_queue_frame = ttk.LabelFrame(return_frame, text="Return List", padding=8)
-        return_queue_frame.grid(row=3, column=0, sticky="nsew")
-        return_queue_frame.columnconfigure(0, weight=1)
-        return_queue_frame.rowconfigure(0, weight=1)
-        self.return_queue_tree = self._create_tree(
-            return_queue_frame,
-            columns=["barcode_id", "item_name", "open_units", "quantity", "current_holder", "oldest_checkout"],
+        return_inventory_frame = ttk.LabelFrame(
+            return_frame,
+            text="Selected Cadet's Currently Checked-Out Inventory",
+            padding=8,
+        )
+        return_inventory_frame.grid(row=3, column=0, sticky="nsew")
+        return_inventory_frame.columnconfigure(0, weight=1)
+        return_inventory_frame.rowconfigure(0, weight=1)
+        self.return_inventory_tree = self._create_tree(
+            return_inventory_frame,
+            columns=[
+                "transaction_id",
+                "barcode_id",
+                "item_name",
+                "category",
+                "variant",
+                "item_type",
+                "checkout_time",
+            ],
             selectmode="extended",
         )
-        self.return_queue_tree.grid(row=0, column=0, sticky="nsew")
+        self.return_inventory_tree.grid(row=0, column=0, sticky="nsew")
+        self.return_inventory_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_return_summary())
 
-        return_queue_actions = ttk.Frame(return_frame)
-        return_queue_actions.grid(row=4, column=0, sticky="ew", pady=(8, 10))
-        for index in range(3):
-            return_queue_actions.columnconfigure(index, weight=1)
-        ttk.Button(return_queue_actions, text="Select All", command=lambda: self._select_all_tree_rows(self.return_queue_tree)).grid(
-            row=0, column=0, sticky="ew", padx=(0, 4)
-        )
-        ttk.Button(return_queue_actions, text="Remove Selected", command=self._remove_selected_return_queue).grid(
-            row=0, column=1, sticky="ew", padx=4
-        )
-        ttk.Button(return_queue_actions, text="Clear List", command=self._clear_return_queue).grid(
-            row=0, column=2, sticky="ew", padx=(4, 0)
+        selection_actions = ttk.Frame(return_frame)
+        selection_actions.grid(row=4, column=0, sticky="ew", pady=(8, 10))
+        selection_actions.columnconfigure(2, weight=1)
+        ttk.Button(
+            selection_actions,
+            text="Select All Held Items",
+            command=self._select_all_return_items,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            selection_actions,
+            text="Clear Item Selection",
+            command=self._clear_return_item_selection,
+        ).grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(selection_actions, text="Only selected rows will be returned.").grid(
+            row=0, column=2, sticky="e", padx=(12, 0)
         )
 
-        ttk.Label(return_frame, text="Return / Condition Notes").grid(row=5, column=0, sticky="nw", pady=(8, 0))
-        self.return_notes_text = tk.Text(return_frame, height=8, wrap="word")
+        ttk.Label(return_frame, text="Return / Condition Notes").grid(row=5, column=0, sticky="w")
+        self.return_notes_text = tk.Text(return_frame, height=6, wrap="word")
         self.return_notes_text.grid(row=6, column=0, sticky="ew", pady=(6, 0))
 
         return_actions = ttk.Frame(return_frame)
         return_actions.grid(row=7, column=0, sticky="ew", pady=(12, 0))
-        for index in range(2):
-            return_actions.columnconfigure(index, weight=1)
-        ttk.Button(return_actions, text="Return Queued Items", command=self._submit_return).grid(
+        return_actions.columnconfigure(0, weight=1)
+        return_actions.columnconfigure(1, weight=1)
+        ttk.Button(return_actions, text="Return Selected Items", command=self._submit_return).grid(
             row=0, column=0, sticky="ew", padx=(0, 4)
         )
         ttk.Button(return_actions, text="Reset Return", command=self._clear_return_form).grid(
@@ -1498,6 +1572,7 @@ class InventoryApp(tk.Tk):
         self.refresh_wings_export()
         self.refresh_barcode_directory()
         self.refresh_cadets()
+        self.refresh_return_cadets()
         self.refresh_report()
         self.refresh_admin_codes()
         self._update_generator_preview()
@@ -2076,6 +2151,33 @@ class InventoryApp(tk.Tk):
                 ],
                 [],
             )
+
+    def refresh_return_cadets(self) -> None:
+        rows = self.service.list_cadets(search=self.return_cadet_search_var.get())
+        rows = sorted(
+            rows,
+            key=lambda row: (
+                str(row.get("full_name") or "").casefold(),
+                str(row.get("email") or "").casefold(),
+                int(row.get("cadet_id") or 0),
+            ),
+        )
+        self.return_cadet_cache = {int(row["cadet_id"]): row for row in rows}
+        self._populate_tree(
+            self.return_cadet_tree,
+            ["cadet_id", "full_name", "email", "open_items"],
+            rows,
+        )
+        if (
+            self.selected_return_cadet_id is not None
+            and self.selected_return_cadet_id in self.return_cadet_cache
+        ):
+            self.return_cadet_tree.selection_set(str(self.selected_return_cadet_id))
+            self._load_return_cadet_details(self.selected_return_cadet_id)
+        elif self.selected_return_cadet_id is not None:
+            self._clear_return_form(clear_search=False)
+        elif not rows:
+            self.return_summary_var.set("No saved cadets match this search.")
 
     def refresh_admin_codes(self) -> None:
         rows = self.service.list_admin_codes()
@@ -4248,7 +4350,59 @@ class InventoryApp(tk.Tk):
         self._update_checkout_queue_tree()
         self._focus_checkout_scan()
 
-    def _queue_return_barcode(self, _event: tk.Event | None = None) -> None:
+    def _on_return_cadet_selected(self, _event: tk.Event | None = None) -> None:
+        selection = self.return_cadet_tree.selection()
+        if not selection:
+            return
+        try:
+            cadet_id = int(selection[0])
+        except (TypeError, ValueError):
+            return
+        self._run_action(lambda: self._load_return_cadet_details(cadet_id), success_message=None)
+
+    def _load_return_cadet_details(self, cadet_id: int) -> None:
+        details = self.service.get_cadet_details(cadet_id)
+        self.selected_return_cadet_id = int(cadet_id)
+        self.return_cadet_details = details
+        self.return_scan_var.set("")
+        self.return_qty_var.set("1")
+        self._populate_tree(
+            self.return_inventory_tree,
+            [
+                "transaction_id",
+                "barcode_id",
+                "item_name",
+                "category",
+                "variant",
+                "item_type",
+                "checkout_time",
+            ],
+            details["current_items"],
+        )
+        self._update_return_summary()
+        self.return_scan_entry.focus_set()
+
+    def _update_return_summary(self) -> None:
+        if self.selected_return_cadet_id is None or self.return_cadet_details is None:
+            self.return_summary_var.set("Search for and select the cadet who is returning items.")
+            return
+        cadet = self.return_cadet_details["cadet"]
+        held_units = len(self.return_inventory_tree.get_children())
+        selected_units = len(self.return_inventory_tree.selection())
+        held_message = (
+            "This cadet has no items currently checked out."
+            if held_units == 0
+            else f"Held units: {held_units} | Selected to return: {selected_units}."
+        )
+        self.return_summary_var.set(
+            f"Returning cadet: {cadet['full_name']} | {cadet['email']}\n{held_message}"
+        )
+
+    def _select_scanned_return_items(self, _event: tk.Event | None = None) -> None:
+        if self.selected_return_cadet_id is None:
+            self._show_error("Select the cadet who is returning items before scanning a barcode.")
+            self.return_cadet_search_entry.focus_set()
+            return
         raw_scan = self.return_scan_var.get()
         if not raw_scan.strip():
             return
@@ -4260,97 +4414,106 @@ class InventoryApp(tk.Tk):
             self.return_scan_entry.focus_set()
             return
         try:
-            quantity = max(1, int(self.return_qty_var.get()))
-        except ValueError:
-            self._show_error("Units To Add must be a whole number.")
+            quantity = int(self.return_qty_var.get())
+        except (TypeError, ValueError):
+            self._show_error("Units must be a whole number.")
             return
-        try:
-            item = self.service.get_barcode_context(barcode)
-        except InventoryError as exc:
-            self._show_error(str(exc))
+        if quantity < 1:
+            self._show_error("Units must be at least 1.")
             return
 
-        open_transactions = item["open_transactions"]
-        if not open_transactions:
-            self._show_error("This barcode has no open checkout records.")
-            return
-
-        existing_quantity = int(self.return_queue.get(barcode, {}).get("quantity", 0))
-        open_units = len(open_transactions)
-        if open_units < existing_quantity + quantity:
+        columns = list(self.return_inventory_tree["columns"])
+        barcode_index = columns.index("barcode_id")
+        already_selected = set(self.return_inventory_tree.selection())
+        available_matches: list[str] = []
+        total_matches = 0
+        for item_id in self.return_inventory_tree.get_children():
+            values = self.return_inventory_tree.item(item_id, "values")
+            if barcode_index >= len(values) or str(values[barcode_index]).upper() != barcode:
+                continue
+            total_matches += 1
+            if item_id not in already_selected:
+                available_matches.append(str(item_id))
+        if len(available_matches) < quantity:
             self._show_error(
-                f"Only {open_units} unit(s) of {barcode} are currently checked out. Reduce the return quantity."
+                f"The selected cadet has {total_matches} open unit(s) of {barcode}, and only "
+                f"{len(available_matches)} remain unselected."
             )
+            self.return_scan_var.set("")
+            self.return_scan_entry.focus_set()
             return
 
-        first_holder = open_transactions[0]
-        holder_text = first_holder["cadet_name"]
-        if open_units > 1:
-            holder_text = f"{holder_text} (+{open_units - 1} more)"
-
-        self.return_queue[barcode] = {
-            "barcode_id": item["barcode_id"],
-            "item_name": item["item_name"],
-            "open_units": open_units,
-            "quantity": existing_quantity + quantity,
-            "current_holder": holder_text,
-            "oldest_checkout": first_holder["checkout_time"],
-        }
-        self._update_return_queue_tree()
-        queue_units = sum(int(row["quantity"]) for row in self.return_queue.values())
-        self.return_summary_var.set(
-            f"Added {quantity} unit(s) of {item['barcode_id']} to the return list. "
-            f"The list now contains {len(self.return_queue)} barcode line(s) and {queue_units} total unit(s)."
-        )
+        self.return_inventory_tree.selection_add(*available_matches[:quantity])
         self.return_scan_var.set("")
         self.return_qty_var.set("1")
+        self._update_return_summary()
         self.return_scan_entry.focus_set()
 
-    def _update_return_queue_tree(self) -> None:
-        self._populate_tree(
-            self.return_queue_tree,
-            ["barcode_id", "item_name", "open_units", "quantity", "current_holder", "oldest_checkout"],
-            list(self.return_queue.values()),
-        )
-
-    def _remove_selected_return_queue(self) -> None:
-        selected_ids = self.return_queue_tree.selection()
-        if not selected_ids:
-            self._show_error("Select one or more return rows to remove.")
+    def _select_all_return_items(self) -> None:
+        children = self.return_inventory_tree.get_children()
+        if not children:
+            self._show_error("The selected cadet has no checked-out items to return.")
             return
-        for barcode_id in selected_ids:
-            self.return_queue.pop(str(barcode_id).upper(), None)
-        self._update_return_queue_tree()
-        self.return_summary_var.set(f"Return list updated. {len(self.return_queue)} barcode line(s) remain queued.")
-        self.return_scan_entry.focus_set()
+        self.return_inventory_tree.selection_set(*children)
+        self._update_return_summary()
 
-    def _clear_return_queue(self) -> None:
-        self.return_queue.clear()
-        self._update_return_queue_tree()
-        self.return_summary_var.set("Return list cleared. Scan or paste a barcode and press Enter to add it again.")
-        self.return_scan_entry.focus_set()
+    def _clear_return_item_selection(self) -> None:
+        selection = self.return_inventory_tree.selection()
+        if selection:
+            self.return_inventory_tree.selection_remove(*selection)
+        self._update_return_summary()
+
+    def _selected_return_transaction_ids(self) -> list[int]:
+        columns = list(self.return_inventory_tree["columns"])
+        try:
+            transaction_index = columns.index("transaction_id")
+        except ValueError:
+            return []
+        transaction_ids: list[int] = []
+        for item_id in self.return_inventory_tree.selection():
+            values = self.return_inventory_tree.item(item_id, "values")
+            if transaction_index >= len(values):
+                continue
+            try:
+                transaction_ids.append(int(values[transaction_index]))
+            except (TypeError, ValueError):
+                continue
+        return transaction_ids
 
     def _submit_return(self) -> None:
-        if not self.return_queue:
-            self._show_error("Scan or paste at least one barcode into the return list first.")
+        if self.selected_return_cadet_id is None or self.return_cadet_details is None:
+            self._show_error("Select the cadet who is returning items first.")
             return
-
-        line_items = [
-            {"barcode_id": row["barcode_id"], "quantity": row["quantity"]}
-            for row in self.return_queue.values()
-        ]
+        transaction_ids = self._selected_return_transaction_ids()
+        if not transaction_ids:
+            self._show_error("Select one or more items from that cadet's checked-out inventory first.")
+            return
+        cadet_id = int(self.selected_return_cadet_id)
+        cadet_name = str(self.return_cadet_details["cadet"]["full_name"])
+        confirmed = messagebox.askyesno(
+            "Confirm Cadet Return",
+            f"Return {len(transaction_ids)} selected unit(s) for {cadet_name}?",
+            parent=self,
+        )
+        if not confirmed:
+            return
 
         def on_success(returned_rows: list[dict[str, Any]]) -> None:
             total_units = len(returned_rows)
             self.refresh_all_views()
-            self._clear_return_form()
+            self.return_scan_var.set("")
+            self.return_qty_var.set("1")
+            self._set_text(self.return_notes_text, "")
+            if self.selected_return_cadet_id == cadet_id:
+                self._load_return_cadet_details(cadet_id)
             self._show_info(
-                f"Returned {total_units} unit(s) across {len(line_items)} barcode line(s)."
+                f"Returned {total_units} unit(s) for {cadet_name}. The return is saved in cadet history and reports."
             )
 
         self._run_action(
-            lambda: self.service.return_items_bulk(
-                line_items=line_items,
+            lambda: self.service.return_cadet_items(
+                cadet_id=cadet_id,
+                transaction_ids=transaction_ids,
                 approved_by=self.current_admin,
                 condition_notes=self._get_text(self.return_notes_text),
             ),
@@ -4358,15 +4521,31 @@ class InventoryApp(tk.Tk):
             on_success=on_success,
         )
 
-    def _clear_return_form(self) -> None:
-        self.current_return_barcode = None
-        self.return_queue.clear()
+    def _clear_return_form(self, *, clear_search: bool = True) -> None:
+        self.selected_return_cadet_id = None
+        self.return_cadet_details = None
+        if clear_search:
+            self.return_cadet_search_var.set("")
         self.return_scan_var.set("")
         self.return_qty_var.set("1")
-        self.return_summary_var.set("Scan or paste a barcode and press Enter to add it to the return list.")
+        self.return_summary_var.set("Search for and select the cadet who is returning items.")
         self._set_text(self.return_notes_text, "")
-        self._update_return_queue_tree()
-        self.return_scan_entry.focus_set()
+        self._populate_tree(
+            self.return_inventory_tree,
+            [
+                "transaction_id",
+                "barcode_id",
+                "item_name",
+                "category",
+                "variant",
+                "item_type",
+                "checkout_time",
+            ],
+            [],
+        )
+        if clear_search:
+            self.refresh_return_cadets()
+        self.return_cadet_search_entry.focus_set()
 
     def _export_report(self) -> None:
         if not self.report_columns:
@@ -4713,27 +4892,33 @@ A.C.E. Manual
 - Generate WINGS Excel Spreadsheet creates the exact 13-column WINGS workbook with Source last.
 - Item numbers are sorted numerically and preserved in ten-digit WINGS format.
 
-6. Checkout / Return
-- The app opens with an admin code prompt before anyone can use checkout or return.
+6. Checkout
+- The app opens with an admin code prompt before anyone can use checkout or returns.
 - Det005 is the cadre administrator code and signs in as CADRE.
 - On the first login on each Windows device, choose a protected backup folder. A folder on another drive, this computer, or OneDrive is recommended.
 - The device remembers this setup, so the prompt does not appear on every launch. Change the location later in Settings.
 - The live inventory remains with A.C.E. on the portable drive. The protected folder receives separate compressed recovery copies.
 - Scan by typing or pasting a barcode and pressing Enter.
 - Scanner-added timestamps or other prefix/suffix text are removed automatically when one valid barcode is present.
-- Each scan adds the barcode to a checkout list or return list instead of processing immediately.
+- Each scan adds the barcode to the checkout list instead of processing immediately.
 - Enter the cadet name using three boxes: Last, MI, First.
 - Cadet email only needs to be a valid email address with an @ symbol.
 - Save Cadet stores the cadet for future lookups.
 - Check Out Queued Items issues the full queued list and logs which admin approved it.
-- Return Queued Items brings back the full queued list and also logs the approving admin.
 
-7. Barcode Directory
+7. Returns
+- Returns are handled in their own tab and always begin by selecting who is returning the items.
+- Search for the cadet by name or email to pull only that cadet's currently checked-out inventory.
+- Select individual unit rows, select all held items, or scan a held barcode to select matching rows.
+- Return Selected Items closes only those exact checkout records for the named cadet.
+- Returns record condition notes and the approving administrator in cadet history and reports.
+
+8. Barcode Directory
 - Shows every barcode currently in the system in one place.
 - Search or filter the list, then copy selected or all visible barcodes to the clipboard.
 - Use this tab when the scanner is unavailable and you need to paste barcodes manually.
 
-8. Cadets Tab
+9. Cadets Tab
 - Save cadets manually or let checkout save them.
 - Search by name or email.
 - Select a cadet to see currently checked-out items and full transaction history.
@@ -4744,14 +4929,14 @@ A.C.E. Manual
 - Delete Cadet removes the saved cadet record while preserving all checkout history snapshots.
 - Load Into Checkout copies that cadet into the checkout screen.
 
-9. Reports
+10. Reports
 - Checked Out Items shows open issues.
 - Acquired / Purchased Items shows every permanent issue or purchase with the cadet, item, date, approver, and notes.
 - Transaction History shows all checkout, return, permanent-issue, and purchase records.
 - Export CSV saves the current report.
 - Export WINGS Spreadsheet creates the same official-stock-only workbook as the WINGS Export tab.
 
-10. Settings
+11. Settings
 - Set the portable SQLite database location.
 - Set or change the protected backup folder.
 - Configure backup frequency. Backups are compressed ZIP files.
@@ -4763,7 +4948,7 @@ A.C.E. Manual
 - Credits opens the project credit screen.
 - In Credits, click @pixelatedclub to toggle alternate icon mode. Rare icons use 1-in-4 odds in alternate mode and 1-in-4,000 odds normally.
 
-11. Printing Labels
+12. Printing Labels
 - PDFs are stored in the labels folder next to the database.
 - The PDF layout uses the Premium Label Supply PLS892 template: 2" x 1" labels on letter paper, 40 labels per sheet.
 - Print at Actual Size or 100% scale with Fit To Page disabled for best barcode accuracy.
@@ -4890,7 +5075,9 @@ A.C.E. Manual
 
         for index, row in enumerate(rows):
             values = [row.get(column, "") for column in columns]
-            if hasattr(self, "cadet_tree") and tree is self.cadet_tree:
+            if hasattr(self, "cadet_tree") and (
+                tree is self.cadet_tree or tree is getattr(self, "return_cadet_tree", None)
+            ):
                 item_id = str(row.get("cadet_id", f"row-{index}"))
             elif hasattr(self, "admin_tree") and tree is self.admin_tree:
                 item_id = str(row.get("admin_id", f"row-{index}"))
@@ -4902,7 +5089,6 @@ A.C.E. Manual
                     or tree is getattr(self, "generator_tree", None)
                     or tree is getattr(self, "barcode_directory_tree", None)
                     or tree is getattr(self, "checkout_queue_tree", None)
-                    or tree is getattr(self, "return_queue_tree", None)
                 )
             ):
                 item_id = str(row.get("barcode_id", f"row-{index}"))
@@ -4963,7 +5149,12 @@ A.C.E. Manual
 
     def _on_tab_changed(self, _event: tk.Event | None = None) -> None:
         current_tab = self.notebook.tab(self.notebook.select(), "text")
-        if current_tab == "Checkout / Return":
+        if current_tab == "Checkout":
             self._focus_checkout_scan()
+        elif current_tab == "Returns":
+            if self.selected_return_cadet_id is None:
+                self.return_cadet_search_entry.focus_set()
+            else:
+                self.return_scan_entry.focus_set()
         elif current_tab == "WINGS Export":
             self.refresh_wings_export()
