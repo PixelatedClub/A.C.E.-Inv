@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     return_approved_by_name TEXT DEFAULT '',
     return_approved_by_role TEXT DEFAULT '',
     return_approved_at TEXT,
+    disposition TEXT NOT NULL DEFAULT '',
     condition_notes TEXT DEFAULT '',
     FOREIGN KEY (barcode_id) REFERENCES items (barcode_id),
     FOREIGN KEY (cadet_id) REFERENCES cadets (cadet_id),
@@ -231,6 +232,16 @@ class InventoryDatabase:
             connection.execute("ALTER TABLE transactions ADD COLUMN return_approved_by_role TEXT DEFAULT ''")
         if "return_approved_at" not in transaction_columns:
             connection.execute("ALTER TABLE transactions ADD COLUMN return_approved_at TEXT")
+        if "disposition" not in transaction_columns:
+            connection.execute("ALTER TABLE transactions ADD COLUMN disposition TEXT NOT NULL DEFAULT ''")
+
+        connection.execute(
+            """
+            UPDATE transactions
+            SET disposition = 'Returned'
+            WHERE return_time IS NOT NULL AND trim(disposition) = ''
+            """
+        )
 
         connection.execute("CREATE INDEX IF NOT EXISTS idx_transactions_cadet_id ON transactions(cadet_id)")
         connection.execute(
@@ -238,6 +249,9 @@ class InventoryDatabase:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_transactions_return_approved_by_admin_id ON transactions(return_approved_by_admin_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_disposition ON transactions(disposition)"
         )
 
         connection.execute(

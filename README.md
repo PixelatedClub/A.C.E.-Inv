@@ -25,8 +25,10 @@ The application starts with:
 - In-place editing of existing barcode records and their total quantities
 - Lowest-unused-number allocation for new A.C.E. barcodes
 - Scanner-based checkout and return
+- Permanent-issue and purchase disposition from each cadet's checked-out inventory
 - Cadet records and complete transaction history
 - Inventory, readiness, and accountability reports
+- Dedicated acquired/purchased-items report with CSV export
 - Dual-location compressed backups with retention controls
 - Portable, relative data paths for flash-drive use
 - Built-in index management for WINGS and custom items

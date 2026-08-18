@@ -28,6 +28,7 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+$")
 MASTER_ADMIN_CODE = "Det005"
 MASTER_ADMIN_ROLE = "CADRE"
 DEFAULT_ADMIN_ROLE = "ADMIN CADET"
+ACQUISITION_DISPOSITIONS = {"Acquired / Permanent Issue", "Purchased"}
 RESERVED_ADMIN_IDS = {int(seed["admin_id"]) for seed in EASTER_EGG_ADMINS}
 RESERVED_CADET_IDS = {int(seed["cadet_id"]) for seed in EASTER_EGG_CADETS}
 EASTER_EGG_BARCODE_IDS = tuple(str(entry["barcode_id"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY)
@@ -1229,7 +1230,10 @@ class InventoryService:
                     UNION ALL
                     SELECT
                         return_time AS event_time,
-                        'Return' AS action,
+                        CASE
+                            WHEN disposition IN ('Acquired / Permanent Issue', 'Purchased') THEN disposition
+                            ELSE 'Return'
+                        END AS action,
                         barcode_id,
                         cadet_name,
                         cadet_email
@@ -1922,6 +1926,13 @@ class InventoryService:
                     FROM transactions t
                     WHERE t.cadet_id = c.cadet_id OR (t.cadet_id IS NULL AND lower(t.cadet_email) = lower(c.email))
                 ), 0) AS total_transactions,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM transactions t
+                    WHERE
+                        (t.cadet_id = c.cadet_id OR (t.cadet_id IS NULL AND lower(t.cadet_email) = lower(c.email)))
+                        AND t.disposition IN ('Acquired / Permanent Issue', 'Purchased')
+                ), 0) AS acquired_items,
                 (
                     SELECT MAX(t.checkout_time)
                     FROM transactions t
@@ -1977,11 +1988,16 @@ class InventoryService:
                     t.barcode_id,
                     i.item_name,
                     t.checkout_time,
-                    t.return_time,
+                    CASE
+                        WHEN t.return_time IS NULL THEN 'Checked Out'
+                        WHEN trim(t.disposition) <> '' THEN t.disposition
+                        ELSE 'Returned'
+                    END AS disposition,
+                    t.return_time AS closed_time,
                     t.approved_by_name,
                     t.approved_by_role,
-                    t.return_approved_by_name,
-                    t.return_approved_by_role,
+                    t.return_approved_by_name AS closed_by_name,
+                    t.return_approved_by_role AS closed_by_role,
                     t.condition_notes
                 FROM transactions t
                 JOIN items i ON i.barcode_id = t.barcode_id
@@ -1992,11 +2008,161 @@ class InventoryService:
                 (cadet_id, cadet["email"], *EASTER_EGG_BARCODE_IDS),
             ).fetchall()
 
+        history_rows = [dict(row) for row in history]
         return {
             "cadet": dict(cadet),
             "current_items": [dict(row) for row in current_items],
-            "history": [dict(row) for row in history],
+            "history": history_rows,
+            "acquired_items": sum(
+                1 for row in history_rows if row["disposition"] in ACQUISITION_DISPOSITIONS
+            ),
         }
+
+    def acquire_checked_out_items(
+        self,
+        *,
+        cadet_id: int,
+        transaction_ids: list[int],
+        disposition: str,
+        approved_by: dict[str, Any] | None = None,
+        notes: str = "",
+    ) -> list[dict[str, Any]]:
+        cleaned_disposition = " ".join(str(disposition).split())
+        if cleaned_disposition not in ACQUISITION_DISPOSITIONS:
+            raise InventoryError("Disposition must be Acquired / Permanent Issue or Purchased.")
+
+        cleaned_transaction_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for transaction_id in transaction_ids:
+            try:
+                cleaned_id = int(transaction_id)
+            except (TypeError, ValueError) as exc:
+                raise InventoryError("Select valid checked-out transaction rows.") from exc
+            if cleaned_id < 1 or cleaned_id in seen_ids:
+                continue
+            seen_ids.add(cleaned_id)
+            cleaned_transaction_ids.append(cleaned_id)
+        if not cleaned_transaction_ids:
+            raise InventoryError("Select at least one checked-out item first.")
+
+        approval = self._normalize_admin_identity(approved_by)
+        self.database.create_backup(reason="pre_acquisition")
+        placeholders = ", ".join("?" for _ in cleaned_transaction_ids)
+        with self.database.connect() as connection:
+            cadet = connection.execute(
+                "SELECT cadet_id, full_name, email FROM cadets WHERE cadet_id = ?",
+                (int(cadet_id),),
+            ).fetchone()
+            if cadet is None:
+                raise InventoryError("Saved cadet record not found.")
+
+            rows = connection.execute(
+                f"""
+                SELECT
+                    t.transaction_id,
+                    t.barcode_id,
+                    t.cadet_id,
+                    t.cadet_email,
+                    t.return_time,
+                    t.condition_notes,
+                    i.item_name,
+                    i.total_quantity,
+                    i.notes AS item_notes
+                FROM transactions t
+                JOIN items i ON i.barcode_id = t.barcode_id
+                WHERE t.transaction_id IN ({placeholders})
+                ORDER BY t.transaction_id
+                """,
+                cleaned_transaction_ids,
+            ).fetchall()
+            if len(rows) != len(cleaned_transaction_ids):
+                raise InventoryError("One or more selected checkout records no longer exist.")
+
+            for row in rows:
+                belongs_to_cadet = (
+                    row["cadet_id"] == cadet["cadet_id"]
+                    or (
+                        row["cadet_id"] is None
+                        and str(row["cadet_email"] or "").casefold()
+                        == str(cadet["email"] or "").casefold()
+                    )
+                )
+                if not belongs_to_cadet:
+                    raise InventoryError("Every selected item must belong to the selected cadet.")
+                if row["return_time"] is not None:
+                    raise InventoryError("One or more selected items are no longer checked out.")
+
+            units_by_barcode: dict[str, int] = {}
+            item_rows: dict[str, sqlite3.Row] = {}
+            for row in rows:
+                barcode = str(row["barcode_id"])
+                units_by_barcode[barcode] = units_by_barcode.get(barcode, 0) + 1
+                item_rows[barcode] = row
+            for barcode, units in units_by_barcode.items():
+                if int(item_rows[barcode]["total_quantity"]) < units:
+                    raise InventoryError(
+                        f"Inventory total for {barcode} is below the selected acquisition quantity."
+                    )
+
+            closed_at = utc_now()
+            reason = " ".join(str(notes).split())
+            transaction_note = cleaned_disposition
+            if reason:
+                transaction_note = f"{transaction_note}: {reason}"
+            for row in rows:
+                connection.execute(
+                    """
+                    UPDATE transactions
+                    SET return_time = ?, return_approved_by_admin_id = ?,
+                        return_approved_by_name = ?, return_approved_by_role = ?,
+                        return_approved_at = ?, disposition = ?, condition_notes = ?
+                    WHERE transaction_id = ?
+                    """,
+                    (
+                        closed_at,
+                        approval["admin_id"],
+                        approval["approved_by_name"],
+                        approval["approved_by_role"],
+                        closed_at,
+                        cleaned_disposition,
+                        self._append_note(row["condition_notes"], transaction_note),
+                        row["transaction_id"],
+                    ),
+                )
+
+            for barcode, units in units_by_barcode.items():
+                inventory_note = (
+                    f"{units} unit(s) removed as {cleaned_disposition} for {cadet['full_name']}."
+                )
+                if reason:
+                    inventory_note = f"{inventory_note} Reason: {reason}"
+                connection.execute(
+                    """
+                    UPDATE items
+                    SET total_quantity = total_quantity - ?, notes = ?, updated_at = ?
+                    WHERE barcode_id = ?
+                    """,
+                    (
+                        units,
+                        self._append_note(item_rows[barcode]["item_notes"], inventory_note),
+                        closed_at,
+                        barcode,
+                    ),
+                )
+                self._sync_item_state(connection, barcode)
+            connection.commit()
+
+        self.database.note_write()
+        return [
+            {
+                "transaction_id": int(row["transaction_id"]),
+                "barcode_id": str(row["barcode_id"]),
+                "item_name": str(row["item_name"]),
+                "disposition": cleaned_disposition,
+                "closed_time": closed_at,
+            }
+            for row in rows
+        ]
 
     def delete_cadet(self, *, cadet_id: int) -> None:
         with self.database.connect() as connection:
@@ -2180,7 +2346,8 @@ class InventoryService:
                     """
                     UPDATE transactions
                     SET return_time = ?, return_approved_by_admin_id = ?, return_approved_by_name = ?,
-                        return_approved_by_role = ?, return_approved_at = ?, condition_notes = ?
+                        return_approved_by_role = ?, return_approved_at = ?, disposition = 'Returned',
+                        condition_notes = ?
                     WHERE transaction_id = ?
                     """,
                     (
@@ -2240,7 +2407,8 @@ class InventoryService:
                         """
                         UPDATE transactions
                         SET return_time = ?, return_approved_by_admin_id = ?, return_approved_by_name = ?,
-                            return_approved_by_role = ?, return_approved_at = ?, condition_notes = ?
+                            return_approved_by_role = ?, return_approved_at = ?, disposition = 'Returned',
+                            condition_notes = ?
                         WHERE transaction_id = ?
                         """,
                         (
@@ -2270,6 +2438,8 @@ class InventoryService:
     def get_report(self, report_name: str) -> tuple[list[str], list[dict[str, Any]]]:
         if report_name == "Checked Out Items":
             return self._checked_out_report()
+        if report_name == "Acquired / Purchased Items":
+            return self._acquired_items_report()
         return self._transaction_history_report()
 
     def export_rows_to_csv(self, path: Path, columns: list[str], rows: list[dict[str, Any]]) -> Path:
@@ -2356,6 +2526,7 @@ class InventoryService:
                 "created_at": cadet["created_at"],
                 "updated_at": cadet["updated_at"],
                 "open_items": len(details["current_items"]),
+                "acquired_items": details["acquired_items"],
                 "history_entries": len(details["history"]),
             }
         ]
@@ -2369,10 +2540,9 @@ class InventoryService:
         history_rows: list[dict[str, Any]] = []
         for row in details["history"]:
             enriched_row = dict(row)
-            enriched_row["status"] = "Returned" if row.get("return_time") else "Checked Out"
             enriched_row["days_out"] = self._days_between_timestamps(
                 row.get("checkout_time"),
-                row.get("return_time"),
+                row.get("closed_time"),
             )
             history_rows.append(enriched_row)
 
@@ -2389,6 +2559,7 @@ class InventoryService:
                         "created_at",
                         "updated_at",
                         "open_items",
+                        "acquired_items",
                         "history_entries",
                     ],
                     "rows": overview_rows,
@@ -2414,16 +2585,16 @@ class InventoryService:
                     "sheet_name": "Transaction History",
                     "columns": [
                         "transaction_id",
-                        "status",
                         "barcode_id",
                         "item_name",
                         "approved_by_role",
                         "approved_by_name",
                         "checkout_time",
-                        "return_time",
+                        "disposition",
+                        "closed_time",
                         "days_out",
-                        "return_approved_by_role",
-                        "return_approved_by_name",
+                        "closed_by_role",
+                        "closed_by_name",
                         "condition_notes",
                     ],
                     "rows": history_rows,
@@ -2488,6 +2659,7 @@ class InventoryService:
                     return_approved_by_name,
                     return_approved_by_role,
                     return_approved_at,
+                    disposition,
                     condition_notes
                 FROM transactions
                 WHERE barcode_id IN ({barcode_placeholders})
@@ -2594,6 +2766,7 @@ class InventoryService:
                         "return_approved_by_name",
                         "return_approved_by_role",
                         "return_approved_at",
+                        "disposition",
                         "condition_notes",
                     ],
                     "rows": [dict(row) for row in transaction_rows],
@@ -2763,9 +2936,10 @@ class InventoryService:
             "approved_by_name",
             "approved_by_role",
             "checkout_time",
-            "return_time",
-            "return_approved_by_name",
-            "return_approved_by_role",
+            "disposition",
+            "closed_time",
+            "closed_by_name",
+            "closed_by_role",
             "condition_notes",
         ]
         with self.database.connect() as connection:
@@ -2780,14 +2954,62 @@ class InventoryService:
                     t.approved_by_name,
                     t.approved_by_role,
                     t.checkout_time,
-                    t.return_time,
-                    t.return_approved_by_name,
-                    t.return_approved_by_role,
+                    CASE
+                        WHEN t.return_time IS NULL THEN 'Checked Out'
+                        WHEN trim(t.disposition) <> '' THEN t.disposition
+                        ELSE 'Returned'
+                    END AS disposition,
+                    t.return_time AS closed_time,
+                    t.return_approved_by_name AS closed_by_name,
+                    t.return_approved_by_role AS closed_by_role,
                     t.condition_notes
                 FROM transactions t
                 JOIN items i ON i.barcode_id = t.barcode_id
                 WHERE t.barcode_id NOT IN ({", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)})
                 ORDER BY t.checkout_time DESC, t.transaction_id DESC
+                """,
+                EASTER_EGG_BARCODE_IDS,
+            ).fetchall()
+        return columns, [dict(row) for row in rows]
+
+    def _acquired_items_report(self) -> tuple[list[str], list[dict[str, Any]]]:
+        columns = [
+            "transaction_id",
+            "cadet_name",
+            "cadet_email",
+            "barcode_id",
+            "item_name",
+            "category",
+            "variant",
+            "item_type",
+            "disposition",
+            "acquired_time",
+            "approved_by_name",
+            "approved_by_role",
+            "condition_notes",
+        ]
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    t.transaction_id,
+                    t.cadet_name,
+                    t.cadet_email,
+                    t.barcode_id,
+                    i.item_name,
+                    i.category,
+                    i.variant,
+                    i.item_type,
+                    t.disposition,
+                    t.return_time AS acquired_time,
+                    t.return_approved_by_name AS approved_by_name,
+                    t.return_approved_by_role AS approved_by_role,
+                    t.condition_notes
+                FROM transactions t
+                JOIN items i ON i.barcode_id = t.barcode_id
+                WHERE t.disposition IN ('Acquired / Permanent Issue', 'Purchased')
+                  AND t.barcode_id NOT IN ({", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)})
+                ORDER BY t.return_time DESC, t.transaction_id DESC
                 """,
                 EASTER_EGG_BARCODE_IDS,
             ).fetchall()
@@ -3420,7 +3642,7 @@ class InventoryService:
 
         open_units = self._open_checkout_count(connection, barcode_id)
         available_quantity = max(item["total_quantity"] - open_units, 0)
-        status = "Available" if available_quantity > 0 else "Checked Out"
+        status = "Available" if available_quantity > 0 or open_units == 0 else "Checked Out"
         connection.execute(
             """
             UPDATE items

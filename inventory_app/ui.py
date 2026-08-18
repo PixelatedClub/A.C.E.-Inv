@@ -1228,7 +1228,7 @@ class InventoryApp(tk.Tk):
         cadet_tree_frame.rowconfigure(0, weight=1)
         self.cadet_tree = self._create_tree(
             cadet_tree_frame,
-            columns=["cadet_id", "full_name", "email", "open_items", "total_transactions", "last_checkout_time"],
+            columns=["cadet_id", "full_name", "email", "open_items", "acquired_items", "total_transactions", "last_checkout_time"],
         )
         self.cadet_tree.grid(row=0, column=0, sticky="nsew")
         self.cadet_tree.bind("<<TreeviewSelect>>", self._on_cadet_selected)
@@ -1250,6 +1250,7 @@ class InventoryApp(tk.Tk):
         self.cadet_current_tree = self._create_tree(
             current_frame,
             columns=[
+                "transaction_id",
                 "barcode_id",
                 "item_name",
                 "category",
@@ -1259,8 +1260,27 @@ class InventoryApp(tk.Tk):
                 "approved_by_name",
                 "checkout_time",
             ],
+            selectmode="extended",
         )
         self.cadet_current_tree.grid(row=0, column=0, sticky="nsew")
+
+        current_actions = ttk.Frame(current_frame)
+        current_actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        current_actions.columnconfigure(2, weight=1)
+        ttk.Button(
+            current_actions,
+            text="Mark Selected Acquired / Purchased",
+            command=self._mark_selected_cadet_items_acquired,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            current_actions,
+            text="Select All Checked Out",
+            command=lambda: self.cadet_current_tree.selection_set(*self.cadet_current_tree.get_children()),
+        ).grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(
+            current_actions,
+            text="Each selected row represents one checked-out unit.",
+        ).grid(row=0, column=2, sticky="e", padx=(12, 0))
 
         history_actions = ttk.Frame(right_frame)
         history_actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -1290,9 +1310,10 @@ class InventoryApp(tk.Tk):
                 "approved_by_role",
                 "approved_by_name",
                 "checkout_time",
-                "return_time",
-                "return_approved_by_role",
-                "return_approved_by_name",
+                "disposition",
+                "closed_time",
+                "closed_by_role",
+                "closed_by_name",
                 "condition_notes",
             ],
         )
@@ -1312,8 +1333,8 @@ class InventoryApp(tk.Tk):
             top,
             textvariable=self.report_type_var,
             state="readonly",
-            values=["Checked Out Items", "Transaction History"],
-            width=24,
+            values=["Checked Out Items", "Acquired / Purchased Items", "Transaction History"],
+            width=30,
         )
         report_combo.grid(row=0, column=1, sticky="w", padx=(6, 12))
         report_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_report())
@@ -2013,7 +2034,7 @@ class InventoryApp(tk.Tk):
         self.cadet_cache = {int(row["cadet_id"]): row for row in rows}
         self._populate_tree(
             self.cadet_tree,
-            ["cadet_id", "full_name", "email", "open_items", "total_transactions", "last_checkout_time"],
+            ["cadet_id", "full_name", "email", "open_items", "acquired_items", "total_transactions", "last_checkout_time"],
             rows,
         )
         if self.selected_cadet_id and self.selected_cadet_id in self.cadet_cache:
@@ -2026,6 +2047,7 @@ class InventoryApp(tk.Tk):
             self._populate_tree(
                 self.cadet_current_tree,
                 [
+                    "transaction_id",
                     "barcode_id",
                     "item_name",
                     "category",
@@ -2046,9 +2068,10 @@ class InventoryApp(tk.Tk):
                     "approved_by_role",
                     "approved_by_name",
                     "checkout_time",
-                    "return_time",
-                    "return_approved_by_role",
-                    "return_approved_by_name",
+                    "disposition",
+                    "closed_time",
+                    "closed_by_role",
+                    "closed_by_name",
                     "condition_notes",
                 ],
                 [],
@@ -2901,11 +2924,14 @@ class InventoryApp(tk.Tk):
         self.cadet_summary_var.set(
             f"{cadet['full_name']} | {cadet['email']}\n"
             f"Saved: {cadet['created_at']} | Last Updated: {cadet['updated_at']}\n"
-            f"Currently checked out: {len(details['current_items'])} | Total history records: {len(details['history'])}"
+            f"Currently checked out: {len(details['current_items'])} | "
+            f"Acquired / purchased: {details['acquired_items']} | "
+            f"Total history records: {len(details['history'])}"
         )
         self._populate_tree(
             self.cadet_current_tree,
             [
+                "transaction_id",
                 "barcode_id",
                 "item_name",
                 "category",
@@ -2926,9 +2952,10 @@ class InventoryApp(tk.Tk):
                 "approved_by_role",
                 "approved_by_name",
                 "checkout_time",
-                "return_time",
-                "return_approved_by_role",
-                "return_approved_by_name",
+                "disposition",
+                "closed_time",
+                "closed_by_role",
+                "closed_by_name",
                 "condition_notes",
             ],
             details["history"],
@@ -2979,6 +3006,7 @@ class InventoryApp(tk.Tk):
         self._populate_tree(
             self.cadet_current_tree,
             [
+                "transaction_id",
                 "barcode_id",
                 "item_name",
                 "category",
@@ -2999,13 +3027,136 @@ class InventoryApp(tk.Tk):
                 "approved_by_role",
                 "approved_by_name",
                 "checkout_time",
-                "return_time",
-                "return_approved_by_role",
-                "return_approved_by_name",
+                "disposition",
+                "closed_time",
+                "closed_by_role",
+                "closed_by_name",
                 "condition_notes",
             ],
             [],
         )
+
+    def _selected_cadet_current_transaction_ids(self) -> list[int]:
+        columns = list(self.cadet_current_tree["columns"])
+        try:
+            transaction_index = columns.index("transaction_id")
+        except ValueError:
+            return []
+        transaction_ids: list[int] = []
+        for item_id in self.cadet_current_tree.selection():
+            values = self.cadet_current_tree.item(item_id, "values")
+            if transaction_index >= len(values):
+                continue
+            try:
+                transaction_ids.append(int(values[transaction_index]))
+            except (TypeError, ValueError):
+                continue
+        return transaction_ids
+
+    def _mark_selected_cadet_items_acquired(self) -> None:
+        if not self.selected_cadet_id:
+            self._show_error("Select a saved cadet first.")
+            return
+        transaction_ids = self._selected_cadet_current_transaction_ids()
+        if not transaction_ids:
+            self._show_error("Select one or more rows from Currently Checked Out first.")
+            return
+
+        selection = self._prompt_acquisition_disposition(len(transaction_ids))
+        if selection is None:
+            return
+        disposition, notes = selection
+        cadet_id = int(self.selected_cadet_id)
+
+        def on_success(_rows: list[dict[str, Any]]) -> None:
+            self.refresh_all_views()
+            if self.selected_cadet_id == cadet_id:
+                self._load_cadet_details(cadet_id)
+
+        self._run_action(
+            lambda: self.service.acquire_checked_out_items(
+                cadet_id=cadet_id,
+                transaction_ids=transaction_ids,
+                disposition=disposition,
+                approved_by=self.current_admin,
+                notes=notes,
+            ),
+            success_message=(
+                f"Recorded {len(transaction_ids)} unit(s) as {disposition}. "
+                "The units were subtracted from inventory and preserved in cadet history."
+            ),
+            on_success=on_success,
+        )
+
+    def _prompt_acquisition_disposition(self, selected_units: int) -> tuple[str, str] | None:
+        result: dict[str, tuple[str, str]] = {}
+        dialog = tk.Toplevel(self)
+        dialog.title("Record Acquired / Purchased Items")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        dialog.configure(bg="#eef4fb")
+
+        container = ttk.Frame(dialog, padding=18)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            container,
+            text=f"Close {selected_units} selected checkout unit(s) and remove them from inventory.",
+            style="Title.TLabel",
+            wraplength=560,
+            justify="left",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
+
+        disposition_var = tk.StringVar(dialog, value="Acquired / Permanent Issue")
+        ttk.Label(container, text="Disposition").grid(row=1, column=0, sticky="w", padx=(0, 10))
+        ttk.Combobox(
+            container,
+            textvariable=disposition_var,
+            state="readonly",
+            values=["Acquired / Permanent Issue", "Purchased"],
+            width=30,
+        ).grid(row=1, column=1, sticky="ew")
+
+        ttk.Label(container, text="Reason / Notes").grid(row=2, column=0, sticky="nw", padx=(0, 10), pady=(12, 0))
+        notes_text = tk.Text(
+            container,
+            width=52,
+            height=6,
+            wrap="word",
+            font=("Segoe UI", 10),
+            relief="solid",
+            borderwidth=1,
+        )
+        notes_text.grid(row=2, column=1, sticky="ew", pady=(12, 0))
+
+        ttk.Label(
+            container,
+            text=(
+                "This action closes the selected checkout records, subtracts the units from total inventory, "
+                "and keeps the cadet and approving administrator in permanent transaction history."
+            ),
+            style="Subtitle.TLabel",
+            wraplength=560,
+            justify="left",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 14))
+
+        actions = ttk.Frame(container)
+        actions.grid(row=4, column=0, columnspan=2, sticky="e")
+
+        def confirm() -> None:
+            result["value"] = (disposition_var.get(), self._get_text(notes_text))
+            dialog.destroy()
+
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(actions, text="Confirm and Subtract Inventory", command=confirm).grid(row=0, column=1)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.update_idletasks()
+        dialog.geometry(f"+{self.winfo_rootx() + 180}+{self.winfo_rooty() + 150}")
+        self.wait_window(dialog)
+        return result.get("value")
 
     def _delete_selected_cadet(self) -> None:
         if not self.selected_cadet_id:
@@ -3101,9 +3252,10 @@ class InventoryApp(tk.Tk):
             f"Approved By Role: {selected_row.get('approved_by_role', '')}",
             f"Approved By Name: {selected_row.get('approved_by_name', '')}",
             f"Checkout Time: {selected_row.get('checkout_time', '')}",
-            f"Return Time: {selected_row.get('return_time', '') or 'Still checked out'}",
-            f"Return Approved By Role: {selected_row.get('return_approved_by_role', '')}",
-            f"Return Approved By Name: {selected_row.get('return_approved_by_name', '')}",
+            f"Disposition: {selected_row.get('disposition', '')}",
+            f"Closed Time: {selected_row.get('closed_time', '') or 'Still checked out'}",
+            f"Closure Approved By Role: {selected_row.get('closed_by_role', '')}",
+            f"Closure Approved By Name: {selected_row.get('closed_by_name', '')}",
             "",
             "Condition Notes:",
             str(selected_row.get("condition_notes", "") or "(none)"),
@@ -4585,6 +4737,8 @@ A.C.E. Manual
 - Save cadets manually or let checkout save them.
 - Search by name or email.
 - Select a cadet to see currently checked-out items and full transaction history.
+- Select one or more currently checked-out rows and use Mark Selected Acquired / Purchased to record a permanent issue or purchase.
+- Acquired and purchased units are subtracted from total inventory, removed from return and overdue lists, and preserved in cadet history with the approving administrator.
 - Export Cadet History creates a dated Excel workbook for the selected cadet.
 - Use the bottom scroll bar in the cadet history tables or open View Selected Transaction for a readable full-detail window.
 - Delete Cadet removes the saved cadet record while preserving all checkout history snapshots.
@@ -4592,7 +4746,8 @@ A.C.E. Manual
 
 9. Reports
 - Checked Out Items shows open issues.
-- Transaction History shows all checkout and return records.
+- Acquired / Purchased Items shows every permanent issue or purchase with the cadet, item, date, approver, and notes.
+- Transaction History shows all checkout, return, permanent-issue, and purchase records.
 - Export CSV saves the current report.
 - Export WINGS Spreadsheet creates the same official-stock-only workbook as the WINGS Export tab.
 
@@ -4705,16 +4860,18 @@ A.C.E. Manual
                 width = 240
             elif column in {"current_holder"}:
                 width = 240
-            elif column in {"oldest_checkout", "checkout_time", "return_time", "last_checkout_time", "created_at", "updated_at"}:
+            elif column in {"oldest_checkout", "checkout_time", "closed_time", "acquired_time", "last_checkout_time", "created_at", "updated_at"}:
                 width = 180
             elif column in {"barcode_id", "email"}:
                 width = 185
             elif column in {"full_name", "cadet_name"}:
                 width = 240
-            elif column in {"approved_by_name", "return_approved_by_name"}:
+            elif column in {"approved_by_name", "closed_by_name"}:
                 width = 210
-            elif column in {"approved_by_role", "return_approved_by_role"}:
+            elif column in {"approved_by_role", "closed_by_role"}:
                 width = 150
+            elif column in {"disposition"}:
+                width = 205
             elif column in {"category", "variant", "item_type"}:
                 width = 145
             elif column in {"transaction_id", "cadet_id", "admin_id"}:
