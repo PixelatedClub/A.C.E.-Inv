@@ -34,7 +34,7 @@ The application starts with:
 - Portable, relative data paths for flash-drive use
 - Built-in index management for WINGS and custom items
 - Custom-item category and subcategory suggestions based on values already in use
-- Official WINGS male/female officer cloth ranks (items 867-878), plus local cloth GMC 100/200, Hard Blues, and OCP rank entries
+- Official WINGS male/female officer cloth ranks (867-878) and senior mini-metal ranks (2348-2349), plus local ranks where no official WINGS match exists
 - Optional alternate app-icon mode hidden in the Credits screen
 
 ## Run the packaged application

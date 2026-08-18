@@ -38,7 +38,7 @@ EASTER_EGG_CATALOG_VALUES = {
     "item_type": {str(entry["item_type"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
     "item_name": {str(entry["item_name"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
 }
-RANK_CATALOG_VERSION = "rank-catalog-v3-official-cloth"
+RANK_CATALOG_VERSION = "rank-catalog-v4-official-metal-no-notes"
 RANKS = (
     ("GMC100", "GMC 100 (C/4C)"),
     ("GMC200", "GMC 200 (C/3C)"),
@@ -53,7 +53,7 @@ GMC_RANKS = RANKS[:2]
 LOCAL_RANK_FAMILIES = (
     ("SBM", "Men's Cloth Blues Rank", "Men's Cloth Blues Ranks", "M", GMC_RANKS),
     ("SBW", "Women's Cloth Blues Rank", "Women's Cloth Blues Ranks", "F", GMC_RANKS),
-    ("HB", "Hard Blues Rank", "Hard Blues Ranks", "", RANKS),
+    ("HB", "Hard Blues Rank", "Hard Blues Ranks", "", RANKS[:-2]),
     ("OCP", "OCP Rank Patch", "OCP Rank Patches", "", RANKS),
 )
 OFFICIAL_CLOTH_RANK_ITEM_NOS = {
@@ -70,6 +70,15 @@ OFFICIAL_CLOTH_RANK_ITEM_NOS = {
     "LOCAL-RANK-SBM-C1LT": "877",
     "LOCAL-RANK-SBM-C2LT": "878",
 }
+OFFICIAL_METAL_RANK_ITEM_NOS = {
+    "LOCAL-RANK-HB-CCOL": "2348",
+    "LOCAL-RANK-HB-CLTCOL": "2349",
+}
+AUTOMATIC_RANK_MAPPING_NOTE_PATTERN = re.compile(
+    r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] "
+    r"Mapped from local (?:Soft Blues|Hard Blues) rank LOCAL-RANK-[A-Z0-9-]+ "
+    r"to official WINGS item \d+\.$"
+)
 EASTER_EGG_EXPORT_PROFILES = [
     {
         "ace_name": "Heart",
@@ -222,11 +231,32 @@ class InventoryService:
                 else:
                     connection.execute("DELETE FROM wings_catalog WHERE item_no = ?", (item_no,))
 
-            # The officer cloth ranks are official WINGS items 867-878. Move
-            # every existing local Soft Blues inventory line to its exact
-            # official record while retaining the barcode, quantities, notes,
-            # and all checkout history tied to that barcode.
-            for local_item_no, official_item_no in OFFICIAL_CLOTH_RANK_ITEM_NOS.items():
+            # Remove only the automatic rank-mapping entries written by v1.4.1.
+            # Original operational notes on those items remain untouched.
+            items_with_mapping_notes = connection.execute(
+                """
+                SELECT barcode_id, notes
+                FROM items
+                WHERE notes LIKE '%Mapped from local % rank LOCAL-RANK-% to official WINGS item %'
+                """
+            ).fetchall()
+            for item in items_with_mapping_notes:
+                cleaned_notes = self._remove_automatic_rank_mapping_notes(item["notes"])
+                if cleaned_notes != str(item["notes"] or ""):
+                    connection.execute(
+                        "UPDATE items SET notes = ?, updated_at = ? WHERE barcode_id = ?",
+                        (cleaned_notes, now, item["barcode_id"]),
+                    )
+
+            # Officer cloth ranks use official WINGS items 867-878. The two
+            # senior mini-metal ranks use official WINGS items 2348-2349.
+            # Mapping changes descriptive fields only: barcodes, quantities,
+            # notes, and checkout history remain untouched.
+            official_rank_item_nos = {
+                **OFFICIAL_CLOTH_RANK_ITEM_NOS,
+                **OFFICIAL_METAL_RANK_ITEM_NOS,
+            }
+            for local_item_no, official_item_no in official_rank_item_nos.items():
                 official = connection.execute(
                     """
                     SELECT item_no, item_name, size, category, subcategory
@@ -239,19 +269,15 @@ class InventoryService:
                     continue
                 official_item_type = str(official["subcategory"] or official["item_name"])
                 linked_items = connection.execute(
-                    "SELECT barcode_id, notes FROM items WHERE wings_item_no = ?",
+                    "SELECT barcode_id FROM items WHERE wings_item_no = ?",
                     (local_item_no,),
                 ).fetchall()
                 for item in linked_items:
-                    migration_note = (
-                        f"Mapped from local Soft Blues rank {local_item_no} "
-                        f"to official WINGS item {official_item_no}."
-                    )
                     connection.execute(
                         """
                         UPDATE items
                         SET wings_item_no = ?, item_name = ?, category = ?, variant = ?,
-                            item_type = ?, notes = ?, updated_at = ?
+                            item_type = ?, updated_at = ?
                         WHERE barcode_id = ?
                         """,
                         (
@@ -260,7 +286,6 @@ class InventoryService:
                             official["category"],
                             official["size"],
                             official_item_type,
-                            self._append_note(item["notes"], migration_note),
                             now,
                             item["barcode_id"],
                         ),
@@ -354,6 +379,16 @@ class InventoryService:
             connection.commit()
         finally:
             connection.close()
+
+    @staticmethod
+    def _remove_automatic_rank_mapping_notes(notes: str | None) -> str:
+        lines = str(notes or "").splitlines()
+        retained = [
+            line
+            for line in lines
+            if not AUTOMATIC_RANK_MAPPING_NOTE_PATTERN.fullmatch(line.strip())
+        ]
+        return "\n".join(retained).strip()
 
     def authenticate_admin_code(self, code: str) -> dict[str, Any]:
         normalized_code = code.strip()

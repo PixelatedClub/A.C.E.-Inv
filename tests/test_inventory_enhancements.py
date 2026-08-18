@@ -53,8 +53,16 @@ class InventoryEnhancementTests(unittest.TestCase):
                 ORDER BY CAST(item_no AS INTEGER)
                 """
             ).fetchall()
+            official_metal_rows = connection.execute(
+                """
+                SELECT item_no, item_name, size, subcategory
+                FROM wings_catalog
+                WHERE item_no IN ('2348', '2349') AND is_wings = 1
+                ORDER BY CAST(item_no AS INTEGER)
+                """
+            ).fetchall()
 
-        self.assertEqual(len(local_rows), 20)
+        self.assertEqual(len(local_rows), 18)
         self.assertEqual(len({row["item_name"] for row in local_rows}), 4)
         self.assertEqual(len({row["size"] for row in local_rows}), 8)
         self.assertEqual(len({row["subcategory"] for row in local_rows}), 4)
@@ -73,6 +81,13 @@ class InventoryEnhancementTests(unittest.TestCase):
         self.assertFalse(
             any("Soft Blues" in row["item_name"] for row in local_rows + official_cloth_rows)
         )
+
+        local_hard_blues = [row for row in local_rows if row["item_no"].startswith("LOCAL-RANK-HB-")]
+        self.assertEqual(len(local_hard_blues), 6)
+        self.assertNotIn("LOCAL-RANK-HB-CCOL", {row["item_no"] for row in local_hard_blues})
+        self.assertNotIn("LOCAL-RANK-HB-CLTCOL", {row["item_no"] for row in local_hard_blues})
+        self.assertEqual(len(official_metal_rows), 2)
+        self.assertTrue(all("MINI METAL" in row["item_name"] for row in official_metal_rows))
 
     def test_legacy_soft_blues_inventory_migrates_to_official_wings_item(self) -> None:
         with self.service.database.connect() as connection:
@@ -97,7 +112,9 @@ class InventoryEnhancementTests(unittest.TestCase):
                 ) VALUES (
                     'A0000001', 'LOCAL-RANK-SBM-C2LT', 'Men''s Soft Blues Rank',
                     'Insignia', 'C/2D LT', 'Men''s Soft Blues Ranks', 'Available',
-                    'Counted stock', 5, 5, '2026-08-18T00:00:00', '2026-08-18T00:00:00'
+                    'Counted stock
+[2026-08-18 17:03] Mapped from local Soft Blues rank LOCAL-RANK-SBM-C2LT to official WINGS item 878.',
+                    5, 5, '2026-08-18T00:00:00', '2026-08-18T00:00:00'
                 )
                 """
             )
@@ -130,8 +147,7 @@ class InventoryEnhancementTests(unittest.TestCase):
         self.assertEqual(item["item_type"], "INSIGNIA,RANK,OFFICER MALE CLOTH")
         self.assertEqual(item["total_quantity"], 5)
         self.assertEqual(item["available_quantity"], 3)
-        self.assertIn("Counted stock", item["notes"])
-        self.assertIn("official WINGS item 878", item["notes"])
+        self.assertEqual(item["notes"], "Counted stock")
         self.assertEqual(open_transactions, 2)
         self.assertIsNone(local_catalog_row)
 
@@ -141,6 +157,58 @@ class InventoryEnhancementTests(unittest.TestCase):
         self.assertEqual(export_row["Qty Issued"], 2)
         self.assertEqual(export_row["Qty Available"], 3)
         self.assertEqual(export_row["Total in Inventory"], 5)
+
+    def test_hard_blues_colonel_migrates_to_official_mini_metal_without_note(self) -> None:
+        with self.service.database.connect() as connection:
+            connection.execute("DELETE FROM ace_feature_flags WHERE feature_key = ?", (RANK_CATALOG_VERSION,))
+            connection.execute(
+                """
+                INSERT INTO wings_catalog(
+                    item_no, item_name, size, category, subcategory, sex,
+                    stock_number, uom, writeoffs, source, is_wings
+                ) VALUES (
+                    'LOCAL-RANK-HB-CCOL', 'Hard Blues Rank', 'C/Col', 'Insignia',
+                    'Hard Blues Ranks', '', '', 'EA', '', 'A.C.E. Rank Catalog', 0
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO items(
+                    barcode_id, wings_item_no, item_name, category, variant, item_type,
+                    status, notes, total_quantity, available_quantity, created_at, updated_at
+                ) VALUES (
+                    'A0000002', 'LOCAL-RANK-HB-CCOL', 'Hard Blues Rank', 'Insignia',
+                    'C/COL', 'Hard Blues Ranks', 'Available', 'Original hard-rank note',
+                    3, 3, '2026-08-18T00:00:00', '2026-08-18T00:00:00'
+                )
+                """
+            )
+            connection.commit()
+
+        self.service = InventoryService(self.settings)
+
+        with self.service.database.connect() as connection:
+            item = connection.execute(
+                "SELECT * FROM items WHERE barcode_id = 'A0000002'"
+            ).fetchone()
+            local_catalog_row = connection.execute(
+                "SELECT 1 FROM wings_catalog WHERE item_no = 'LOCAL-RANK-HB-CCOL'"
+            ).fetchone()
+
+        self.assertEqual(item["wings_item_no"], "2348")
+        self.assertEqual(item["item_name"], "INSIGNIA, RANK, OFFICER , MINI METAL")
+        self.assertEqual(item["variant"], "C/COL")
+        self.assertEqual(item["item_type"], "Officer, Mini Metal")
+        self.assertEqual(item["total_quantity"], 3)
+        self.assertEqual(item["available_quantity"], 3)
+        self.assertEqual(item["notes"], "Original hard-rank note")
+        self.assertIsNone(local_catalog_row)
+
+        export_row = next(
+            row for row in self.service.list_wings_export_rows() if row["Item No"] == "0000002348"
+        )
+        self.assertEqual(export_row["Total in Inventory"], 3)
 
     def test_official_cloth_rank_with_blank_subcategory_can_generate_inventory(self) -> None:
         created = self.service.save_generated_barcode(

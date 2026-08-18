@@ -4878,7 +4878,8 @@ A.C.E. Manual
 - Add Custom Item collects the same descriptive fields but assigns a LOCAL number and excludes it from WINGS exports.
 - Category and subcategory fields suggest values already used in the catalog or inventory while still allowing new values.
 - Male and female officer cloth ranks use official WINGS items 867-878. GMC 100/200 cloth ranks remain local because the official catalog has no matching cloth records.
-- The local rank catalog also includes Hard Blues and OCP patches from GMC 100 through C/Col.
+- Hard Blues are metal ranks: C/Col and C/Lt Col use official WINGS mini-metal items 2348-2349. Other Hard Blues ranks remain local because the official catalog has no matching metal records.
+- The local rank catalog also includes OCP patches from GMC 100 through C/Col.
 - WINGS rows are reference records and do not mean an item is currently stocked.
 - Click a row to select it, or use Ctrl-click and Shift-click to select multiple rows.
 - Delete Selected from Index hides official catalog rows and permanently deletes selected custom rows.
