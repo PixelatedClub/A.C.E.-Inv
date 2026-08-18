@@ -34,21 +34,29 @@ class InventoryEnhancementTests(unittest.TestCase):
             units_per_barcode=quantity,
         )
 
-    def test_rank_catalog_contains_all_three_styles_and_eight_ranks(self) -> None:
+    def test_rank_catalog_separates_mens_and_womens_soft_blues(self) -> None:
         with self.service.database.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT item_name, size, subcategory
+                SELECT item_no, item_name, size, subcategory, sex
                 FROM wings_catalog
                 WHERE source = 'A.C.E. Rank Catalog'
                 ORDER BY item_no
                 """
             ).fetchall()
 
-        self.assertEqual(len(rows), 24)
-        self.assertEqual(len({row["item_name"] for row in rows}), 3)
+        self.assertEqual(len(rows), 32)
+        self.assertEqual(len({row["item_name"] for row in rows}), 4)
         self.assertEqual(len({row["size"] for row in rows}), 8)
-        self.assertEqual(len({row["subcategory"] for row in rows}), 3)
+        self.assertEqual(len({row["subcategory"] for row in rows}), 4)
+
+        mens_soft_blues = [row for row in rows if row["item_no"].startswith("LOCAL-RANK-SBM-")]
+        womens_soft_blues = [row for row in rows if row["item_no"].startswith("LOCAL-RANK-SBW-")]
+        self.assertEqual(len(mens_soft_blues), 8)
+        self.assertEqual(len(womens_soft_blues), 8)
+        self.assertTrue(all(row["sex"] == "M" for row in mens_soft_blues))
+        self.assertTrue(all(row["sex"] == "F" for row in womens_soft_blues))
+        self.assertNotIn("Soft Blues Rank", {row["item_name"] for row in rows})
 
     def test_new_barcode_reuses_lowest_available_number(self) -> None:
         first = self._save_item(variant="First", item_name="First Test Item")

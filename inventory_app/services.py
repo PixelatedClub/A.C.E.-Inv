@@ -37,11 +37,12 @@ EASTER_EGG_CATALOG_VALUES = {
     "item_type": {str(entry["item_type"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
     "item_name": {str(entry["item_name"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
 }
-RANK_CATALOG_VERSION = "rank-catalog-v1"
+RANK_CATALOG_VERSION = "rank-catalog-v2-soft-blues-sex"
 RANK_FAMILIES = (
-    ("SB", "Soft Blues Rank", "Soft Blues Ranks"),
-    ("HB", "Hard Blues Rank", "Hard Blues Ranks"),
-    ("OCP", "OCP Rank Patch", "OCP Rank Patches"),
+    ("SBM", "Men's Soft Blues Rank", "Men's Soft Blues Ranks", "M"),
+    ("SBW", "Women's Soft Blues Rank", "Women's Soft Blues Ranks", "F"),
+    ("HB", "Hard Blues Rank", "Hard Blues Ranks", ""),
+    ("OCP", "OCP Rank Patch", "OCP Rank Patches", ""),
 )
 RANKS = (
     ("GMC100", "GMC 100 (C/4C)"),
@@ -185,14 +186,47 @@ class InventoryService:
             if already_applied:
                 return
 
-            for family_code, item_name, subcategory in RANK_FAMILIES:
+            legacy_soft_blues_item_nos = [
+                f"LOCAL-RANK-SB-{rank_code}" for rank_code, _rank_name in RANKS
+            ]
+            for item_no in legacy_soft_blues_item_nos:
+                is_linked = connection.execute(
+                    "SELECT 1 FROM items WHERE wings_item_no = ? LIMIT 1",
+                    (item_no,),
+                ).fetchone()
+                if is_linked:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO hidden_index_items(item_no, hidden_at)
+                        VALUES (?, ?)
+                        """,
+                        (item_no, utc_now()),
+                    )
+                else:
+                    connection.execute("DELETE FROM wings_catalog WHERE item_no = ?", (item_no,))
+
+            for kind, value, item_column in (
+                ("item_name", "Soft Blues Rank", "item_name"),
+                ("item_type", "Soft Blues Ranks", "item_type"),
+            ):
+                is_in_use = connection.execute(
+                    f"SELECT 1 FROM items WHERE {item_column} = ? COLLATE NOCASE LIMIT 1",
+                    (value,),
+                ).fetchone()
+                if not is_in_use:
+                    connection.execute(
+                        "DELETE FROM catalog_values WHERE kind = ? AND value = ? COLLATE NOCASE",
+                        (kind, value),
+                    )
+
+            for family_code, item_name, subcategory, sex in RANK_FAMILIES:
                 for rank_code, rank_name in RANKS:
                     connection.execute(
                         """
                         INSERT OR IGNORE INTO wings_catalog(
                             item_no, item_name, size, category, subcategory, sex,
                             stock_number, uom, writeoffs, source, is_wings
-                        ) VALUES (?, ?, ?, 'Insignia', ?, '', '', 'EA', '',
+                        ) VALUES (?, ?, ?, 'Insignia', ?, ?, '', 'EA', '',
                                   'A.C.E. Rank Catalog', 0)
                         """,
                         (
@@ -200,6 +234,7 @@ class InventoryService:
                             item_name,
                             rank_name,
                             subcategory,
+                            sex,
                         ),
                     )
                     for kind, value in (
@@ -517,7 +552,8 @@ class InventoryService:
         sort_by: str = "Item Number",
     ) -> list[dict[str, Any]]:
         conditions: list[str] = [
-            "NOT EXISTS (SELECT 1 FROM hidden_index_items hidden WHERE hidden.item_no = wings_catalog.item_no)"
+            "NOT EXISTS (SELECT 1 FROM hidden_index_items hidden WHERE hidden.item_no = wings_catalog.item_no)",
+            "item_no NOT LIKE 'LOCAL-RANK-SB-%'",
         ]
         params: list[Any] = []
         words = [word for word in search.strip().casefold().split() if word]

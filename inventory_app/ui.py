@@ -4546,7 +4546,7 @@ A.C.E. Manual
 - Manually added WINGS items become available in Index search, Quick Find, and compliant exports.
 - Add Custom Item collects the same descriptive fields but assigns a LOCAL number and excludes it from WINGS exports.
 - Category and subcategory fields suggest values already used in the catalog or inventory while still allowing new values.
-- The local rank catalog includes Soft Blues, Hard Blues, and OCP patches from GMC 100 through C/Col.
+- The local rank catalog separates men's and women's Soft Blues ranks and includes Hard Blues and OCP patches from GMC 100 through C/Col.
 - WINGS rows are reference records and do not mean an item is currently stocked.
 - Click a row to select it, or use Ctrl-click and Shift-click to select multiple rows.
 - Delete Selected from Index hides official catalog rows and permanently deletes selected custom rows.

@@ -31,7 +31,7 @@ The application starts with:
 - Portable, relative data paths for flash-drive use
 - Built-in index management for WINGS and custom items
 - Custom-item category and subcategory suggestions based on values already in use
-- Preloaded Soft Blues, Hard Blues, and OCP rank entries from GMC 100 through C/Col
+- Preloaded men's Soft Blues, women's Soft Blues, Hard Blues, and OCP rank entries from GMC 100 through C/Col
 - Optional alternate app-icon mode hidden in the Credits screen
 
 ## Run the packaged application
