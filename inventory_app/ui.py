@@ -27,7 +27,7 @@ from .config import (
     save_device_backup_settings,
     save_settings,
 )
-from .services import InventoryError, InventoryService
+from .services import InventoryError, InventoryService, REPORT_COLUMN_LABELS
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
 from .wings_catalog import WINGS_COLUMNS
 
@@ -1638,19 +1638,31 @@ class InventoryApp(tk.Tk):
             top,
             textvariable=self.report_type_var,
             state="readonly",
-            values=["Checked Out Items", "Acquired / Purchased Items", "Transaction History"],
+            values=[
+                "Checked Out Items",
+                "Acquired / Purchased Items",
+                "Transaction History",
+                "Inventory Changes",
+            ],
             width=30,
         )
         report_combo.grid(row=0, column=1, sticky="w", padx=(6, 12))
         report_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_report())
 
         ttk.Button(top, text="Refresh Report", command=self.refresh_report).grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(top, text="Export Filtered CSV", command=self._export_report).grid(row=0, column=3, padx=(0, 6))
-        ttk.Button(top, text="Export WINGS Spreadsheet", command=self._export_inventory_spreadsheet).grid(row=0, column=4)
+        ttk.Button(top, text="Export Readable Excel", command=self._export_report_spreadsheet).grid(
+            row=0, column=3, padx=(0, 6)
+        )
+        ttk.Button(top, text="Export CSV", command=self._export_report).grid(
+            row=0, column=4, padx=(0, 6)
+        )
+        ttk.Button(top, text="Export WINGS Spreadsheet", command=self._export_inventory_spreadsheet).grid(
+            row=0, column=5
+        )
 
         ttk.Label(top, text="Start Date (YYYY-MM-DD)").grid(row=1, column=0, sticky="w", pady=(8, 0))
         date_controls = ttk.Frame(top)
-        date_controls.grid(row=1, column=1, columnspan=4, sticky="w", padx=(6, 0), pady=(8, 0))
+        date_controls.grid(row=1, column=1, columnspan=5, sticky="w", padx=(6, 0), pady=(8, 0))
         ttk.Entry(date_controls, textvariable=self.report_start_date_var, width=14).grid(
             row=0, column=0, padx=(0, 8)
         )
@@ -1658,23 +1670,37 @@ class InventoryApp(tk.Tk):
         ttk.Entry(date_controls, textvariable=self.report_end_date_var, width=14).grid(
             row=0, column=2, padx=(6, 10)
         )
-        ttk.Button(date_controls, text="This Week", command=self._set_report_this_week).grid(
+        ttk.Button(date_controls, text="Today", command=self._set_report_today).grid(
             row=0, column=3, padx=(0, 6)
         )
-        ttk.Button(date_controls, text="Last 7 Days", command=self._set_report_last_seven_days).grid(
+        ttk.Button(date_controls, text="This Week", command=self._set_report_this_week).grid(
             row=0, column=4, padx=(0, 6)
         )
-        ttk.Button(date_controls, text="Clear Dates", command=self._clear_report_dates).grid(row=0, column=5)
+        ttk.Button(date_controls, text="Last 7 Days", command=self._set_report_last_seven_days).grid(
+            row=0, column=5, padx=(0, 6)
+        )
+        ttk.Button(date_controls, text="Clear Dates", command=self._clear_report_dates).grid(row=0, column=6)
 
         report_frame = ttk.LabelFrame(self.reports_tab, text="Report Results", padding=10)
         report_frame.grid(row=1, column=0, sticky="nsew")
         report_frame.columnconfigure(0, weight=1)
         report_frame.rowconfigure(0, weight=1)
 
-        self.report_tree = self._create_tree(report_frame, columns=[])
+        report_tree_frame = ttk.Frame(report_frame)
+        report_tree_frame.grid(row=0, column=0, sticky="nsew")
+        report_tree_frame.columnconfigure(0, weight=1)
+        report_tree_frame.rowconfigure(0, weight=1)
+        self.report_tree = self._create_tree(report_tree_frame, columns=[])
         self.report_tree.grid(row=0, column=0, sticky="nsew")
-        ttk.Label(report_frame, textvariable=self.report_summary_var, wraplength=960).grid(
-            row=1, column=0, sticky="w", pady=(8, 0)
+        self.report_tree.bind("<Double-1>", lambda _event: self._view_selected_report_row())
+        report_footer = ttk.Frame(report_frame)
+        report_footer.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        report_footer.columnconfigure(0, weight=1)
+        ttk.Label(report_footer, textvariable=self.report_summary_var, wraplength=1080).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Button(report_footer, text="View Selected Row", command=self._view_selected_report_row).grid(
+            row=0, column=1, sticky="e", padx=(8, 0)
         )
 
     def _build_settings_tab(self) -> None:
@@ -2262,11 +2288,67 @@ class InventoryApp(tk.Tk):
             return
         self.report_columns = columns
         self.report_rows = rows
-        self._populate_tree(self.report_tree, columns, rows)
+        self._populate_tree(self.report_tree, columns, self.service.format_report_rows(rows))
         start_text = self.report_start_date_var.get().strip() or "earliest"
         end_text = self.report_end_date_var.get().strip() or "today"
         self.report_summary_var.set(
-            f"Showing {len(rows)} row(s) for {self.report_type_var.get()} from {start_text} through {end_text}."
+            f"{self.service.summarize_report(self.report_type_var.get(), rows)} "
+            f"Date range: {start_text} through {end_text}."
+        )
+
+    def _set_report_today(self) -> None:
+        today = date.today().isoformat()
+        self.report_start_date_var.set(today)
+        self.report_end_date_var.set(today)
+        self.refresh_report()
+
+    def _view_selected_report_row(self) -> None:
+        selected_row = self._selected_tree_row(self.report_tree)
+        if selected_row is None:
+            self._show_error("Select a report row first.")
+            return
+
+        window = tk.Toplevel(self)
+        window.title(f"{self.report_type_var.get()} Detail")
+        window.transient(self)
+        window.grab_set()
+        window.geometry("880x620")
+        window.configure(bg="#eef4fb")
+
+        container = ttk.Frame(window, padding=16)
+        container.grid(row=0, column=0, sticky="nsew")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(1, weight=1)
+        ttk.Label(container, text=self.report_type_var.get(), style="Title.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 10)
+        )
+
+        detail_text = tk.Text(
+            container,
+            wrap="word",
+            font=("Segoe UI", 11),
+            bg="white",
+            fg="#0f172a",
+            relief="solid",
+            borderwidth=1,
+            padx=14,
+            pady=14,
+        )
+        detail_text.grid(row=1, column=0, sticky="nsew")
+        detail_scroll = ttk.Scrollbar(container, orient="vertical", command=detail_text.yview)
+        detail_scroll.grid(row=1, column=1, sticky="ns")
+        detail_text.configure(yscrollcommand=detail_scroll.set)
+        lines = [
+            f"{self.service.report_column_label(column)}: "
+            f"{selected_row.get(column, '') or '(none)'}"
+            for column in self.report_columns
+        ]
+        detail_text.insert("1.0", "\n\n".join(lines))
+        detail_text.configure(state="disabled")
+        ttk.Button(container, text="Close", command=window.destroy).grid(
+            row=2, column=0, sticky="e", pady=(12, 0)
         )
 
     def _set_report_this_week(self) -> None:
@@ -5073,17 +5155,48 @@ class InventoryApp(tk.Tk):
             start_token = self.report_start_date_var.get().strip() or "earliest"
             end_token = self.report_end_date_var.get().strip() or "today"
             date_suffix = f"_{start_token}_to_{end_token}"
+        report_token = re.sub(r"[^A-Za-z0-9]+", "_", self.report_type_var.get()).strip("_").lower()
         filename = filedialog.asksaveasfilename(
             title="Export Report To CSV",
             defaultextension=".csv",
             filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-            initialfile=f"{self.report_type_var.get().replace(' ', '_').lower()}{date_suffix}.csv",
+            initialfile=f"{report_token}{date_suffix}.csv",
         )
         if not filename:
             return
         self._run_action(
             lambda: self.service.export_rows_to_csv(Path(filename), self.report_columns, self.report_rows),
             success_message=f"Report exported to {filename}",
+        )
+
+    def _export_report_spreadsheet(self) -> None:
+        if not self.report_columns:
+            self._show_error("Load a report before exporting.")
+            return
+        date_suffix = ""
+        if self.report_start_date_var.get().strip() or self.report_end_date_var.get().strip():
+            start_token = self.report_start_date_var.get().strip() or "earliest"
+            end_token = self.report_end_date_var.get().strip() or "today"
+            date_suffix = f"_{start_token}_to_{end_token}"
+        report_token = re.sub(r"[^A-Za-z0-9]+", "_", self.report_type_var.get()).strip("_").lower()
+        filename = filedialog.asksaveasfilename(
+            title="Export Readable Report To Excel",
+            defaultextension=".xlsx",
+            filetypes=[("Excel Workbooks", "*.xlsx"), ("All Files", "*.*")],
+            initialfile=f"{report_token}{date_suffix}.xlsx",
+        )
+        if not filename:
+            return
+        self._run_action(
+            lambda: self.service.export_report_spreadsheet(
+                Path(filename),
+                report_name=self.report_type_var.get(),
+                columns=self.report_columns,
+                rows=self.report_rows,
+                start_date=self.report_start_date_var.get(),
+                end_date=self.report_end_date_var.get(),
+            ),
+            success_message=f"Readable Excel report exported to {filename}",
         )
 
     def _export_inventory_spreadsheet(self) -> None:
@@ -5470,7 +5583,10 @@ A.C.E. Manual
 - Checked Out Items shows open issues.
 - Acquired / Purchased Items shows every permanent issue or purchase with the cadet, item, date, approver, and notes.
 - Transaction History shows all checkout, return, permanent-issue, and purchase records.
-- Export CSV saves the current report.
+- Inventory Changes records new items, quantity increases or decreases, item edits, status changes, and deletions without relying on the current item still existing.
+- Use Today, This Week, or Last 7 Days for quick date ranges. Every report displays readable headings, dates, and a plain-language summary.
+- Export Readable Excel creates a formatted workbook with a Summary sheet, clear headings, filters, frozen headers, and a detailed report sheet.
+- Export CSV saves the same report with readable headings and timestamps.
 - Export WINGS Spreadsheet creates the same official-stock-only workbook as the WINGS Export tab.
 
 12. Settings
@@ -5573,7 +5689,11 @@ A.C.E. Manual
         tree.delete(*tree.get_children())
         tree["columns"] = columns
         for column in columns:
-            heading_text = column if column in WINGS_COLUMNS else column.replace("_", " ").title()
+            heading_text = (
+                column
+                if column in WINGS_COLUMNS
+                else REPORT_COLUMN_LABELS.get(column, column.replace("_", " ").title())
+            )
             tree.heading(column, text=heading_text)
             width = 130
             if column in {"notes", "condition_notes"}:
@@ -5582,7 +5702,7 @@ A.C.E. Manual
                 width = 240
             elif column in {"current_holder"}:
                 width = 240
-            elif column in {"oldest_checkout", "checkout_time", "closed_time", "acquired_time", "last_checkout_time", "created_at", "updated_at"}:
+            elif column in {"event_time", "oldest_checkout", "checkout_time", "closed_time", "acquired_time", "last_checkout_time", "created_at", "updated_at"}:
                 width = 180
             elif column in {"barcode_id", "email"}:
                 width = 185
@@ -5594,6 +5714,10 @@ A.C.E. Manual
                 width = 150
             elif column in {"disposition"}:
                 width = 205
+            elif column in {"action"}:
+                width = 180
+            elif column in {"details"}:
+                width = 330
             elif column in {"category", "variant", "item_type"}:
                 width = 145
             elif column in {"transaction_id", "cadet_id", "admin_id", "size_entry_id"}:

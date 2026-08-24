@@ -39,7 +39,45 @@ EASTER_EGG_CATALOG_VALUES = {
     "item_name": {str(entry["item_name"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
 }
 RANK_CATALOG_VERSION = "rank-catalog-v4-official-metal-no-notes"
+INVENTORY_CHANGE_AUDIT_VERSION = "inventory-change-audit-v1"
 LOCAL_INVENTORY_MAPPING_SOURCE = "A.C.E. Local Inventory Mapping"
+REPORT_COLUMN_LABELS = {
+    "transaction_id": "Transaction #",
+    "change_id": "Change #",
+    "event_time": "Date & Time",
+    "action": "Change",
+    "barcode_id": "Barcode",
+    "wings_item_no": "WINGS / Local Item #",
+    "item_name": "Item",
+    "category": "Category",
+    "variant": "Size / Variant",
+    "item_type": "Type",
+    "cadet_name": "Cadet",
+    "cadet_email": "Cadet Email",
+    "approved_by_name": "Approved By",
+    "approved_by_role": "Approver Role",
+    "checkout_time": "Checked Out",
+    "days_out": "Days Out",
+    "disposition": "Status / Result",
+    "closed_time": "Closed",
+    "acquired_time": "Acquired / Purchased",
+    "closed_by_name": "Closed By",
+    "closed_by_role": "Closer Role",
+    "condition_notes": "Notes",
+    "quantity_change": "Qty Change",
+    "total_before": "Previous Total",
+    "total_after": "New Total",
+    "available_before": "Previously Available",
+    "available_after": "Available Now",
+    "details": "Explanation",
+    "source": "Recorded By",
+}
+REPORT_TIMESTAMP_FIELDS = {
+    "event_time",
+    "checkout_time",
+    "closed_time",
+    "acquired_time",
+}
 RANKS = (
     ("GMC100", "GMC 100 (C/4C)"),
     ("GMC200", "GMC 200 (C/3C)"),
@@ -188,12 +226,69 @@ class InventoryService:
         self._seed_rank_catalog()
         self._ensure_inventory_item_numbers()
         self._reconcile_packaging_variants()
+        self._backfill_current_day_inventory_changes()
 
     def replace_settings(self, settings: AppSettings) -> None:
         self.settings = settings
         self.database.swap_settings(settings)
         self._ensure_inventory_item_numbers()
         self._reconcile_packaging_variants()
+        self._backfill_current_day_inventory_changes()
+
+    def _backfill_current_day_inventory_changes(self) -> int:
+        """Recover today's new-item totals once when upgrading from pre-audit builds."""
+        recovered_count = 0
+        today_prefix = f"{date.today().isoformat()}%"
+        with self.database.connect() as connection:
+            applied = connection.execute(
+                "SELECT 1 FROM ace_feature_flags WHERE feature_key = ?",
+                (INVENTORY_CHANGE_AUDIT_VERSION,),
+            ).fetchone()
+            if applied is not None:
+                return 0
+            cursor = connection.execute(
+                """
+                INSERT INTO inventory_changes(
+                    event_time, action, barcode_id, wings_item_no, item_name,
+                    category, variant, item_type, quantity_change, total_before,
+                    total_after, available_before, available_after, details, source
+                )
+                SELECT
+                    created_at,
+                    'New Item Added (Recovered)',
+                    barcode_id,
+                    COALESCE(wings_item_no, ''),
+                    item_name,
+                    category,
+                    variant,
+                    item_type,
+                    total_quantity,
+                    0,
+                    total_quantity,
+                    0,
+                    available_quantity,
+                    'Recovered from the item creation timestamp when change tracking was enabled.',
+                    'Upgrade recovery'
+                FROM items
+                WHERE created_at LIKE ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM inventory_changes changes
+                      WHERE changes.barcode_id = items.barcode_id
+                        AND changes.action IN ('New Item Added', 'New Item Added (Recovered)')
+                  )
+                """,
+                (today_prefix,),
+            )
+            recovered_count = max(0, int(cursor.rowcount))
+            connection.execute(
+                "INSERT INTO ace_feature_flags(feature_key, applied_at) VALUES (?, ?)",
+                (INVENTORY_CHANGE_AUDIT_VERSION, utc_now()),
+            )
+            connection.commit()
+        if recovered_count:
+            self.database.note_write()
+        return recovered_count
 
     def _ensure_inventory_item_numbers(self) -> int:
         """Give every inventory row an official or explicit local catalog number."""
@@ -1970,7 +2065,7 @@ class InventoryService:
                 """
                 UPDATE items
                 SET item_name = ?, category = ?, variant = ?, item_type = ?,
-                    total_quantity = ?, notes = ?, updated_at = ?
+                    total_quantity = ?, available_quantity = ?, notes = ?, updated_at = ?
                 WHERE barcode_id = ?
                 """,
                 (
@@ -1979,6 +2074,7 @@ class InventoryService:
                     variant,
                     item_type,
                     quantity,
+                    max(quantity - checked_out, 0),
                     notes.strip(),
                     utc_now(),
                     barcode,
@@ -3269,6 +3365,9 @@ class InventoryService:
         elif report_name == "Acquired / Purchased Items":
             columns, rows = self._acquired_items_report()
             date_fields = ("acquired_time",)
+        elif report_name == "Inventory Changes":
+            columns, rows = self._inventory_changes_report()
+            date_fields = ("event_time",)
         else:
             columns, rows = self._transaction_history_report()
             date_fields = ("checkout_time", "closed_time")
@@ -3315,14 +3414,116 @@ class InventoryService:
             return True
         return False
 
+    @staticmethod
+    def report_column_label(column: str) -> str:
+        return REPORT_COLUMN_LABELS.get(column, column.replace("_", " ").title())
+
+    def format_report_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        formatted_rows: list[dict[str, Any]] = []
+        for row in rows:
+            formatted: dict[str, Any] = {}
+            for column, value in row.items():
+                if column in REPORT_TIMESTAMP_FIELDS:
+                    parsed = self._parse_export_timestamp(value)
+                    if parsed is None:
+                        formatted[column] = ""
+                    else:
+                        local_value = parsed.astimezone() if parsed.tzinfo is not None else parsed
+                        formatted[column] = local_value.strftime("%b %d, %Y %I:%M %p").replace(
+                            " 0", " "
+                        )
+                elif column == "quantity_change" and value not in (None, ""):
+                    numeric_value = int(value)
+                    formatted[column] = f"{numeric_value:+d}" if numeric_value else "0"
+                else:
+                    formatted[column] = value
+            formatted_rows.append(formatted)
+        return formatted_rows
+
+    def summarize_report(self, report_name: str, rows: list[dict[str, Any]]) -> str:
+        if report_name == "Inventory Changes":
+            units_added = sum(max(0, int(row.get("quantity_change") or 0)) for row in rows)
+            units_removed = sum(max(0, -int(row.get("quantity_change") or 0)) for row in rows)
+            item_count = len({str(row.get("barcode_id") or "") for row in rows})
+            return (
+                f"{len(rows)} recorded change(s) across {item_count} item(s): "
+                f"{units_added} unit(s) added and {units_removed} unit(s) removed."
+            )
+        if report_name == "Checked Out Items":
+            cadet_count = len({str(row.get("cadet_email") or "") for row in rows})
+            return f"{len(rows)} unit(s) currently checked out to {cadet_count} cadet(s)."
+        if report_name == "Acquired / Purchased Items":
+            cadet_count = len({str(row.get("cadet_email") or "") for row in rows})
+            return f"{len(rows)} permanently issued or purchased unit(s) for {cadet_count} cadet(s)."
+        status_counts: dict[str, int] = {}
+        for row in rows:
+            status = str(row.get("disposition") or "Unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+        breakdown = ", ".join(
+            f"{status}: {count}" for status, count in sorted(status_counts.items())
+        )
+        return f"{len(rows)} transaction event(s)" + (f" ({breakdown})." if breakdown else ".")
+
     def export_rows_to_csv(self, path: Path, columns: list[str], rows: list[dict[str, Any]]) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
+        readable_columns = [self.report_column_label(column) for column in columns]
+        formatted_rows = self.format_report_rows(rows)
         with path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer = csv.DictWriter(handle, fieldnames=readable_columns)
             writer.writeheader()
-            for row in rows:
-                writer.writerow({column: row.get(column, "") for column in columns})
+            for formatted in formatted_rows:
+                writer.writerow(
+                    {
+                        self.report_column_label(column): formatted.get(column, "")
+                        for column in columns
+                    }
+                )
         return path
+
+    def export_report_spreadsheet(
+        self,
+        path: Path,
+        *,
+        report_name: str,
+        columns: list[str],
+        rows: list[dict[str, Any]],
+        start_date: str = "",
+        end_date: str = "",
+    ) -> Path:
+        readable_columns = [self.report_column_label(column) for column in columns]
+        formatted_rows = self.format_report_rows(rows)
+        readable_rows = [
+            {
+                self.report_column_label(column): row.get(column, "")
+                for column in columns
+            }
+            for row in formatted_rows
+        ]
+        date_range = (
+            f"{start_date.strip() or 'Earliest'} through {end_date.strip() or 'Today'}"
+        )
+        summary_rows = [
+            {"Report Detail": "Report", "Value": report_name},
+            {"Report Detail": "Date Range", "Value": date_range},
+            {"Report Detail": "Generated", "Value": datetime.now().strftime("%b %d, %Y %I:%M %p").replace(" 0", " ")},
+            {"Report Detail": "Summary", "Value": self.summarize_report(report_name, rows)},
+        ]
+        return self._write_simple_xlsx_workbook(
+            path,
+            workbook_title=f"{self.settings.org_name} {report_name}",
+            sheets=[
+                {
+                    "sheet_name": "Summary",
+                    "columns": ["Report Detail", "Value"],
+                    "rows": summary_rows,
+                },
+                {
+                    "sheet_name": report_name,
+                    "columns": readable_columns,
+                    "rows": readable_rows,
+                },
+            ],
+        )
 
     def export_inventory_spreadsheet(self, *, open_after: bool = True) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3860,6 +4061,43 @@ class InventoryService:
             ).fetchall()
         return columns, [dict(row) for row in rows]
 
+    def _inventory_changes_report(self) -> tuple[list[str], list[dict[str, Any]]]:
+        columns = [
+            "event_time",
+            "action",
+            "item_name",
+            "variant",
+            "quantity_change",
+            "total_before",
+            "total_after",
+            "available_after",
+            "barcode_id",
+            "wings_item_no",
+            "category",
+            "details",
+        ]
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    event_time,
+                    action,
+                    item_name,
+                    variant,
+                    quantity_change,
+                    total_before,
+                    total_after,
+                    available_after,
+                    barcode_id,
+                    wings_item_no,
+                    category,
+                    details
+                FROM inventory_changes
+                ORDER BY event_time DESC, change_id DESC
+                """
+            ).fetchall()
+        return columns, [dict(row) for row in rows]
+
     def _transaction_history_report(self) -> tuple[list[str], list[dict[str, Any]]]:
         columns = [
             "transaction_id",
@@ -4218,6 +4456,13 @@ class InventoryService:
             "Total in Inventory": 18, "Item Name": 34, "Size": 18,
             "Category": 22, "Subcategory": 22, "Sex": 9, "Stock #": 18,
             "UoM": 9, "Go to Writeoffs": 18, "Source": 18,
+            "Report Detail": 22, "Value": 70, "Date & Time": 24,
+            "Change": 24, "Item": 38, "Size / Variant": 20,
+            "Qty Change": 12, "Previous Total": 15, "New Total": 12,
+            "Available Now": 15, "Barcode": 16, "WINGS / Local Item #": 24,
+            "Explanation": 54, "Cadet": 28, "Cadet Email": 30,
+            "Approved By": 24, "Checked Out": 24, "Closed": 24,
+            "Notes": 48,
         }
         columns_xml = "".join(
             f'<col min="{index}" max="{index}" width="{width_map.get(column, 18)}" customWidth="1"/>'
@@ -4231,7 +4476,11 @@ class InventoryService:
             self._xlsx_inline_string_cell(
                 column_index + 1,
                 1,
-                column if column in WINGS_COLUMNS else column.replace("_", " ").title(),
+                (
+                    column
+                    if column in WINGS_COLUMNS or (" " in column and "_" not in column)
+                    else column.replace("_", " ").title()
+                ),
                 style_id=1,
             )
             for column_index, column in enumerate(columns)

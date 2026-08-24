@@ -67,6 +67,25 @@ CREATE TABLE IF NOT EXISTS barcode_aliases (
     FOREIGN KEY (canonical_barcode_id) REFERENCES items (barcode_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS inventory_changes (
+    change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_time TEXT NOT NULL,
+    action TEXT NOT NULL,
+    barcode_id TEXT NOT NULL,
+    wings_item_no TEXT NOT NULL DEFAULT '',
+    item_name TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    variant TEXT NOT NULL DEFAULT '',
+    item_type TEXT NOT NULL DEFAULT '',
+    quantity_change INTEGER NOT NULL DEFAULT 0,
+    total_before INTEGER NOT NULL DEFAULT 0,
+    total_after INTEGER NOT NULL DEFAULT 0,
+    available_before INTEGER NOT NULL DEFAULT 0,
+    available_after INTEGER NOT NULL DEFAULT 0,
+    details TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'Automatic audit'
+);
+
 CREATE TABLE IF NOT EXISTS cadets (
     cadet_id INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name TEXT NOT NULL,
@@ -169,6 +188,85 @@ CREATE INDEX IF NOT EXISTS idx_transactions_cadet_email ON transactions(cadet_em
 CREATE INDEX IF NOT EXISTS idx_transactions_checkout ON transactions(checkout_time);
 CREATE INDEX IF NOT EXISTS idx_transactions_return ON transactions(return_time);
 CREATE INDEX IF NOT EXISTS idx_custom_index_system ON custom_index_items(uniform_system);
+CREATE INDEX IF NOT EXISTS idx_inventory_changes_event_time ON inventory_changes(event_time);
+CREATE INDEX IF NOT EXISTS idx_inventory_changes_barcode ON inventory_changes(barcode_id);
+
+CREATE TRIGGER IF NOT EXISTS trg_items_inventory_change_insert
+AFTER INSERT ON items
+BEGIN
+    INSERT INTO inventory_changes(
+        event_time, action, barcode_id, wings_item_no, item_name, category,
+        variant, item_type, quantity_change, total_before, total_after,
+        available_before, available_after, details, source
+    ) VALUES (
+        strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'),
+        'New Item Added', NEW.barcode_id, COALESCE(NEW.wings_item_no, ''),
+        NEW.item_name, NEW.category, NEW.variant, NEW.item_type,
+        NEW.total_quantity, 0, NEW.total_quantity, 0, NEW.available_quantity,
+        'A new inventory barcode was created.', 'Automatic audit'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_items_inventory_change_update
+AFTER UPDATE ON items
+WHEN OLD.total_quantity <> NEW.total_quantity
+  OR OLD.item_name <> NEW.item_name
+  OR OLD.category <> NEW.category
+  OR OLD.variant <> NEW.variant
+  OR OLD.item_type <> NEW.item_type
+  OR COALESCE(OLD.wings_item_no, '') <> COALESCE(NEW.wings_item_no, '')
+  OR (
+      OLD.status <> NEW.status
+      AND (
+          OLD.status IN ('Lost', 'Retired')
+          OR NEW.status IN ('Lost', 'Retired')
+      )
+  )
+BEGIN
+    INSERT INTO inventory_changes(
+        event_time, action, barcode_id, wings_item_no, item_name, category,
+        variant, item_type, quantity_change, total_before, total_after,
+        available_before, available_after, details, source
+    ) VALUES (
+        strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'),
+        CASE
+            WHEN NEW.total_quantity > OLD.total_quantity THEN 'Quantity Added'
+            WHEN NEW.total_quantity < OLD.total_quantity THEN 'Quantity Removed'
+            WHEN OLD.status <> NEW.status THEN 'Status Changed'
+            ELSE 'Item Details Edited'
+        END,
+        NEW.barcode_id, COALESCE(NEW.wings_item_no, ''), NEW.item_name,
+        NEW.category, NEW.variant, NEW.item_type,
+        NEW.total_quantity - OLD.total_quantity,
+        OLD.total_quantity, NEW.total_quantity,
+        OLD.available_quantity, NEW.available_quantity,
+        CASE
+            WHEN NEW.total_quantity <> OLD.total_quantity
+                THEN 'The inventory total was changed.'
+            WHEN OLD.status <> NEW.status
+                THEN 'Status changed from ' || OLD.status || ' to ' || NEW.status || '.'
+            ELSE 'The item description or catalog mapping was changed.'
+        END,
+        'Automatic audit'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_items_inventory_change_delete
+AFTER DELETE ON items
+BEGIN
+    INSERT INTO inventory_changes(
+        event_time, action, barcode_id, wings_item_no, item_name, category,
+        variant, item_type, quantity_change, total_before, total_after,
+        available_before, available_after, details, source
+    ) VALUES (
+        strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'),
+        'Item Deleted', OLD.barcode_id, COALESCE(OLD.wings_item_no, ''),
+        OLD.item_name, OLD.category, OLD.variant, OLD.item_type,
+        -OLD.total_quantity, OLD.total_quantity, 0,
+        OLD.available_quantity, 0,
+        'The inventory barcode was permanently deleted.', 'Automatic audit'
+    );
+END;
 """
 
 

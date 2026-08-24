@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from inventory_app.config import AppSettings
@@ -161,6 +162,76 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
         self.assertEqual(matching[0]["total_quantity"], 4)
         self.assertEqual(matching[0]["size"], "C/1ST LT")
         self.assertIn("FEMALE", matching[0]["fitting_label"])
+
+    def test_inventory_changes_report_tracks_additions_edits_and_deletions(self) -> None:
+        barcode = self.service.create_manual_item(
+            barcode_id="AUDIT-0001",
+            item_name="Audit Test Cap",
+            category="Accessories",
+            variant="7 1/4",
+            item_type="Headwear",
+            quantity=2,
+        )
+        self.service.restock_item(barcode_id=barcode, quantity=3)
+        self.service.update_item(
+            barcode_id=barcode,
+            item_name="Audit Test Patrol Cap",
+            category="Accessories",
+            variant="7 1/4",
+            item_type="Headwear",
+            total_quantity=5,
+        )
+
+        columns, rows = self.service.get_report("Inventory Changes")
+        self.assertIn("quantity_change", columns)
+        matching = [row for row in rows if row["barcode_id"] == barcode]
+        self.assertEqual(
+            {row["action"] for row in matching},
+            {"New Item Added", "Quantity Added", "Item Details Edited"},
+        )
+        self.assertEqual(sum(int(row["quantity_change"]) for row in matching), 5)
+        summary = self.service.summarize_report("Inventory Changes", matching)
+        self.assertIn("5 unit(s) added", summary)
+
+        self.service.delete_item(barcode_id=barcode)
+        _, rows_after_delete = self.service.get_report("Inventory Changes")
+        deleted = [
+            row
+            for row in rows_after_delete
+            if row["barcode_id"] == barcode and row["action"] == "Item Deleted"
+        ]
+        self.assertEqual(len(deleted), 1)
+        self.assertEqual(deleted[0]["quantity_change"], -5)
+
+    def test_readable_report_spreadsheet_has_summary_and_friendly_headers(self) -> None:
+        self.service.create_manual_item(
+            barcode_id="REPORT-0001",
+            item_name="Readable Report Item",
+            category="Test",
+            variant="Medium",
+            item_type="Test Gear",
+            quantity=4,
+        )
+        columns, rows = self.service.get_report("Inventory Changes")
+        export_path = self.settings.database_path.parent / "readable_inventory_changes.xlsx"
+        self.service.export_report_spreadsheet(
+            export_path,
+            report_name="Inventory Changes",
+            columns=columns,
+            rows=rows,
+            start_date="2026-08-24",
+            end_date="2026-08-24",
+        )
+
+        self.assertTrue(export_path.exists())
+        with zipfile.ZipFile(export_path) as workbook:
+            workbook_xml = workbook.read("xl/workbook.xml").decode("utf-8")
+            detail_xml = workbook.read("xl/worksheets/sheet2.xml").decode("utf-8")
+        self.assertIn('name="Summary"', workbook_xml)
+        self.assertIn('name="Inventory Changes"', workbook_xml)
+        self.assertIn("Date &amp; Time", detail_xml)
+        self.assertIn("Qty Change", detail_xml)
+        self.assertIn("WINGS / Local Item #", detail_xml)
 
     def test_every_inventory_row_receives_official_or_local_item_number(self) -> None:
         barcode = self.service.create_manual_item(
