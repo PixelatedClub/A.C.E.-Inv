@@ -10,6 +10,7 @@ import time
 import tkinter as tk
 import textwrap
 import wave
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from tkinter import filedialog, messagebox, ttk
@@ -71,6 +72,27 @@ SUIT_ICON_CODE_MAP = {
     "spade": "spade",
     "spades": "spade",
 }
+
+CADET_FITTING_SIZE_LABELS = (
+    "Height",
+    "Weight",
+    "Blues Service Coat",
+    "Blues Shirt - Short Sleeve",
+    "Blues Shirt - Long Sleeve",
+    "Blues Trousers",
+    "Blues Skirt",
+    "OCP Coat",
+    "OCP Trousers",
+    "OCP Undershirt",
+    "PT Shirt",
+    "PT Shorts",
+    "PT Jacket",
+    "PT Pants",
+    "Flight Cap",
+    "Dress Shoes",
+    "OCP Boots",
+    "Belt",
+)
 
 SUIT_ICON_FILENAMES = {
     "club": "club.png",
@@ -363,6 +385,8 @@ class InventoryApp(tk.Tk):
         )
 
         self.report_type_var = tk.StringVar(value="Checked Out Items")
+        self.report_start_date_var = tk.StringVar()
+        self.report_end_date_var = tk.StringVar()
         self.report_summary_var = tk.StringVar(value="No report loaded yet.")
         self.cadet_search_var = tk.StringVar()
         self.cadet_sort_var = tk.StringVar(value="ID")
@@ -371,6 +395,14 @@ class InventoryApp(tk.Tk):
         self.cadet_first_name_var = tk.StringVar()
         self.cadet_form_email_var = tk.StringVar()
         self.cadet_summary_var = tk.StringVar(value="Select or save a cadet to view issued items.")
+        self.fitting_search_var = tk.StringVar()
+        self.fitting_summary_var = tk.StringVar(value="Select a cadet to catalog fitting sizes.")
+        self.fitting_size_label_var = tk.StringVar()
+        self.fitting_size_value_var = tk.StringVar()
+        self.fitting_notes_var = tk.StringVar()
+        self.selected_fitting_cadet_id: int | None = None
+        self.selected_fitting_size_entry_id: int | None = None
+        self.fitting_size_cache: dict[int, dict[str, Any]] = {}
 
         self.settings_org_name_var = tk.StringVar()
         self.settings_db_path_var = tk.StringVar()
@@ -402,6 +434,7 @@ class InventoryApp(tk.Tk):
         self.returns_tab = ttk.Frame(self.notebook, padding=12)
         self.barcode_directory_tab = ttk.Frame(self.notebook, padding=12)
         self.cadets_tab = ttk.Frame(self.notebook, padding=12)
+        self.cadet_fitting_tab = ttk.Frame(self.notebook, padding=12)
         self.reports_tab = ttk.Frame(self.notebook, padding=12)
         self.settings_tab = ttk.Frame(self.notebook, padding=12)
 
@@ -414,6 +447,7 @@ class InventoryApp(tk.Tk):
         self.notebook.add(self.returns_tab, text="Returns")
         self.notebook.add(self.barcode_directory_tab, text="Barcode Directory")
         self.notebook.add(self.cadets_tab, text="Cadets")
+        self.notebook.add(self.cadet_fitting_tab, text="Cadet Fitting Index")
         self.notebook.add(self.reports_tab, text="Reports")
         self.notebook.add(self.settings_tab, text="Settings")
 
@@ -426,6 +460,7 @@ class InventoryApp(tk.Tk):
         self._build_returns_tab()
         self._build_barcode_directory_tab()
         self._build_cadets_tab()
+        self._build_cadet_fitting_tab()
         self._build_reports_tab()
         self._build_settings_tab()
 
@@ -931,7 +966,8 @@ class InventoryApp(tk.Tk):
             self.wings_export_tab,
             text=(
                 "This preview contains only stocked inventory mapped to official WINGS records. Local, "
-                "custom, and zero-stock Index rows are excluded. Quantities come from the current A.C.E. inventory."
+                "custom, and zero-stock Index rows are excluded from the compliant WINGS file. Use the complete "
+                "inventory export when local-only records must also be included."
             ),
             style="Subtitle.TLabel",
             wraplength=1180,
@@ -948,7 +984,10 @@ class InventoryApp(tk.Tk):
             row=0, column=2, padx=(0, 6)
         )
         ttk.Button(actions, text="Generate WINGS Excel Spreadsheet", command=self._export_inventory_spreadsheet).grid(
-            row=0, column=3
+            row=0, column=3, padx=(0, 6)
+        )
+        ttk.Button(actions, text="Export Complete Inventory", command=self._export_complete_inventory_spreadsheet).grid(
+            row=0, column=4
         )
 
         tree_frame = ttk.Frame(self.wings_export_tab)
@@ -1395,6 +1434,97 @@ class InventoryApp(tk.Tk):
         self.cadet_history_tree.grid(row=0, column=0, sticky="nsew")
         self.cadet_history_tree.bind("<Double-1>", lambda _event: self._view_selected_cadet_history_entry())
 
+    def _build_cadet_fitting_tab(self) -> None:
+        self.cadet_fitting_tab.columnconfigure(0, weight=1)
+        self.cadet_fitting_tab.rowconfigure(2, weight=1)
+
+        ttk.Label(self.cadet_fitting_tab, text="Cadet Fitting Index", style="Title.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            self.cadet_fitting_tab,
+            text="Select a saved cadet and catalog any uniform size or fitting measurement needed for issue appointments.",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+        content = ttk.Frame(self.cadet_fitting_tab)
+        content.grid(row=2, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=2)
+        content.rowconfigure(0, weight=1)
+
+        cadet_frame = ttk.LabelFrame(content, text="Saved Cadets", padding=10)
+        cadet_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        cadet_frame.columnconfigure(1, weight=1)
+        cadet_frame.rowconfigure(1, weight=1)
+        ttk.Label(cadet_frame, text="Search").grid(row=0, column=0, sticky="w")
+        fitting_search_entry = ttk.Entry(cadet_frame, textvariable=self.fitting_search_var)
+        fitting_search_entry.grid(row=0, column=1, sticky="ew", padx=(6, 8))
+        fitting_search_entry.bind("<Return>", lambda _event: self.refresh_cadet_fitting_index())
+        ttk.Button(cadet_frame, text="Refresh", command=self.refresh_cadet_fitting_index).grid(
+            row=0, column=2
+        )
+        fitting_cadet_tree_frame = ttk.Frame(cadet_frame)
+        fitting_cadet_tree_frame.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
+        fitting_cadet_tree_frame.columnconfigure(0, weight=1)
+        fitting_cadet_tree_frame.rowconfigure(0, weight=1)
+        self.fitting_cadet_tree = self._create_tree(
+            fitting_cadet_tree_frame,
+            columns=["cadet_id", "full_name", "email"],
+        )
+        self.fitting_cadet_tree.grid(row=0, column=0, sticky="nsew")
+        self.fitting_cadet_tree.bind("<<TreeviewSelect>>", self._on_fitting_cadet_selected)
+
+        sizes_frame = ttk.LabelFrame(content, text="Selected Cadet Size Profile", padding=10)
+        sizes_frame.grid(row=0, column=1, sticky="nsew")
+        sizes_frame.columnconfigure(0, weight=1)
+        sizes_frame.rowconfigure(2, weight=1)
+        ttk.Label(
+            sizes_frame,
+            textvariable=self.fitting_summary_var,
+            wraplength=760,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        editor = ttk.Frame(sizes_frame)
+        editor.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        editor.columnconfigure(1, weight=2)
+        editor.columnconfigure(3, weight=1)
+        editor.columnconfigure(5, weight=2)
+        ttk.Label(editor, text="Item / Measurement").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(
+            editor,
+            textvariable=self.fitting_size_label_var,
+            values=list(CADET_FITTING_SIZE_LABELS),
+            width=28,
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 10))
+        ttk.Label(editor, text="Size / Value").grid(row=0, column=2, sticky="w")
+        ttk.Entry(editor, textvariable=self.fitting_size_value_var, width=18).grid(
+            row=0, column=3, sticky="ew", padx=(6, 10)
+        )
+        ttk.Label(editor, text="Notes").grid(row=0, column=4, sticky="w")
+        ttk.Entry(editor, textvariable=self.fitting_notes_var).grid(
+            row=0, column=5, sticky="ew", padx=(6, 10)
+        )
+        ttk.Button(editor, text="Save Size", command=self._save_fitting_size).grid(
+            row=0, column=6, padx=(0, 6)
+        )
+        ttk.Button(editor, text="Delete Size", command=self._delete_fitting_size).grid(
+            row=0, column=7, padx=(0, 6)
+        )
+        ttk.Button(editor, text="Clear", command=self._clear_fitting_size_form).grid(row=0, column=8)
+
+        fitting_size_tree_frame = ttk.Frame(sizes_frame)
+        fitting_size_tree_frame.grid(row=2, column=0, sticky="nsew")
+        fitting_size_tree_frame.columnconfigure(0, weight=1)
+        fitting_size_tree_frame.rowconfigure(0, weight=1)
+        self.fitting_size_tree = self._create_tree(
+            fitting_size_tree_frame,
+            columns=["size_entry_id", "size_label", "size_value", "notes", "updated_at"],
+        )
+        self.fitting_size_tree.grid(row=0, column=0, sticky="nsew")
+        self.fitting_size_tree.bind("<<TreeviewSelect>>", self._on_fitting_size_selected)
+
     def _build_reports_tab(self) -> None:
         self.reports_tab.columnconfigure(0, weight=1)
         self.reports_tab.rowconfigure(1, weight=1)
@@ -1415,8 +1545,26 @@ class InventoryApp(tk.Tk):
         report_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_report())
 
         ttk.Button(top, text="Refresh Report", command=self.refresh_report).grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(top, text="Export CSV", command=self._export_report).grid(row=0, column=3, padx=(0, 6))
+        ttk.Button(top, text="Export Filtered CSV", command=self._export_report).grid(row=0, column=3, padx=(0, 6))
         ttk.Button(top, text="Export WINGS Spreadsheet", command=self._export_inventory_spreadsheet).grid(row=0, column=4)
+
+        ttk.Label(top, text="Start Date (YYYY-MM-DD)").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        date_controls = ttk.Frame(top)
+        date_controls.grid(row=1, column=1, columnspan=4, sticky="w", padx=(6, 0), pady=(8, 0))
+        ttk.Entry(date_controls, textvariable=self.report_start_date_var, width=14).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ttk.Label(date_controls, text="End Date (YYYY-MM-DD)").grid(row=0, column=1, sticky="w")
+        ttk.Entry(date_controls, textvariable=self.report_end_date_var, width=14).grid(
+            row=0, column=2, padx=(6, 10)
+        )
+        ttk.Button(date_controls, text="This Week", command=self._set_report_this_week).grid(
+            row=0, column=3, padx=(0, 6)
+        )
+        ttk.Button(date_controls, text="Last 7 Days", command=self._set_report_last_seven_days).grid(
+            row=0, column=4, padx=(0, 6)
+        )
+        ttk.Button(date_controls, text="Clear Dates", command=self._clear_report_dates).grid(row=0, column=5)
 
         report_frame = ttk.LabelFrame(self.reports_tab, text="Report Results", padding=10)
         report_frame.grid(row=1, column=0, sticky="nsew")
@@ -1573,6 +1721,7 @@ class InventoryApp(tk.Tk):
         self.refresh_wings_export()
         self.refresh_barcode_directory()
         self.refresh_cadets()
+        self.refresh_cadet_fitting_index()
         self.refresh_return_cadets()
         self.refresh_report()
         self.refresh_admin_codes()
@@ -1656,13 +1805,15 @@ class InventoryApp(tk.Tk):
 
     def refresh_wings_export(self) -> None:
         rows = self.service.list_wings_export_rows()
+        audit = self.service.inventory_item_number_audit()
         self._populate_tree(self.wings_export_tree, list(WINGS_COLUMNS), rows)
         total_units = sum(int(row["Total in Inventory"]) for row in rows)
         issued_units = sum(int(row["Qty Issued"]) for row in rows)
         available_units = sum(int(row["Qty Available"]) for row in rows)
         self.wings_export_summary_var.set(
             f"{len(rows)} official WINGS rows | Total {total_units} | "
-            f"Issued {issued_units} | Available {available_units}"
+            f"Issued {issued_units} | Available {available_units} | "
+            f"Local-only barcode rows {audit['local_rows']} | Missing item numbers {audit['missing_rows']}"
         )
 
 
@@ -2000,11 +2151,41 @@ class InventoryApp(tk.Tk):
         )
 
     def refresh_report(self) -> None:
-        columns, rows = self.service.get_report(self.report_type_var.get())
+        try:
+            columns, rows = self.service.get_report(
+                self.report_type_var.get(),
+                start_date=self.report_start_date_var.get(),
+                end_date=self.report_end_date_var.get(),
+            )
+        except InventoryError as exc:
+            self._show_error(str(exc))
+            return
         self.report_columns = columns
         self.report_rows = rows
         self._populate_tree(self.report_tree, columns, rows)
-        self.report_summary_var.set(f"Showing {len(rows)} row(s) for {self.report_type_var.get()}.")
+        start_text = self.report_start_date_var.get().strip() or "earliest"
+        end_text = self.report_end_date_var.get().strip() or "today"
+        self.report_summary_var.set(
+            f"Showing {len(rows)} row(s) for {self.report_type_var.get()} from {start_text} through {end_text}."
+        )
+
+    def _set_report_this_week(self) -> None:
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        self.report_start_date_var.set(week_start.isoformat())
+        self.report_end_date_var.set(today.isoformat())
+        self.refresh_report()
+
+    def _set_report_last_seven_days(self) -> None:
+        today = date.today()
+        self.report_start_date_var.set((today - timedelta(days=6)).isoformat())
+        self.report_end_date_var.set(today.isoformat())
+        self.refresh_report()
+
+    def _clear_report_dates(self) -> None:
+        self.report_start_date_var.set("")
+        self.report_end_date_var.set("")
+        self.refresh_report()
 
     def refresh_label_library(self) -> None:
         selected_ids = self._selected_label_barcode_ids() if hasattr(self, "label_library_tree") else []
@@ -2152,6 +2333,133 @@ class InventoryApp(tk.Tk):
                 ],
                 [],
             )
+
+    def refresh_cadet_fitting_index(self) -> None:
+        rows = self.service.list_cadets(search=self.fitting_search_var.get())
+        rows = sorted(
+            rows,
+            key=lambda row: (
+                str(row.get("full_name") or "").casefold(),
+                int(row.get("cadet_id") or 0),
+            ),
+        )
+        self._populate_tree(
+            self.fitting_cadet_tree,
+            ["cadet_id", "full_name", "email"],
+            rows,
+        )
+        visible_ids = {int(row["cadet_id"]) for row in rows}
+        if self.selected_fitting_cadet_id in visible_ids:
+            selected_id = str(self.selected_fitting_cadet_id)
+            if self.fitting_cadet_tree.exists(selected_id):
+                self.fitting_cadet_tree.selection_set(selected_id)
+            self._load_fitting_cadet(int(self.selected_fitting_cadet_id or 0))
+        else:
+            self.selected_fitting_cadet_id = None
+            self.selected_fitting_size_entry_id = None
+            self.fitting_size_cache = {}
+            self.fitting_summary_var.set("Select a cadet to catalog fitting sizes.")
+            self._populate_tree(
+                self.fitting_size_tree,
+                ["size_entry_id", "size_label", "size_value", "notes", "updated_at"],
+                [],
+            )
+            self._clear_fitting_size_form()
+
+    def _load_fitting_cadet(self, cadet_id: int) -> None:
+        details = self.service.get_cadet_details(cadet_id)
+        cadet = details["cadet"]
+        rows = list(details["size_entries"])
+        self.selected_fitting_cadet_id = int(cadet_id)
+        self.fitting_size_cache = {int(row["size_entry_id"]): row for row in rows}
+        self.fitting_summary_var.set(
+            f"{cadet['full_name']} | {cadet['email']} | {len(rows)} saved fitting size(s)"
+        )
+        self._populate_tree(
+            self.fitting_size_tree,
+            ["size_entry_id", "size_label", "size_value", "notes", "updated_at"],
+            rows,
+        )
+
+    def _on_fitting_cadet_selected(self, _event: tk.Event | None = None) -> None:
+        selection = self.fitting_cadet_tree.selection()
+        if not selection:
+            return
+        try:
+            cadet_id = int(selection[0])
+        except ValueError:
+            return
+        self.selected_fitting_size_entry_id = None
+        self._clear_fitting_size_form()
+        self._run_action(lambda: self._load_fitting_cadet(cadet_id), success_message=None)
+
+    def _on_fitting_size_selected(self, _event: tk.Event | None = None) -> None:
+        selected = self._selected_tree_row(self.fitting_size_tree)
+        if not selected:
+            return
+        try:
+            size_entry_id = int(selected.get("size_entry_id", ""))
+        except ValueError:
+            return
+        row = self.fitting_size_cache.get(size_entry_id)
+        if row is None:
+            return
+        self.selected_fitting_size_entry_id = size_entry_id
+        self.fitting_size_label_var.set(str(row.get("size_label") or ""))
+        self.fitting_size_value_var.set(str(row.get("size_value") or ""))
+        self.fitting_notes_var.set(str(row.get("notes") or ""))
+
+    def _save_fitting_size(self) -> None:
+        if self.selected_fitting_cadet_id is None:
+            self._show_error("Select a cadet before saving a fitting size.")
+            return
+
+        def on_success(_row: dict[str, Any]) -> None:
+            self._load_fitting_cadet(int(self.selected_fitting_cadet_id or 0))
+            self._clear_fitting_size_form()
+
+        self._run_action(
+            lambda: self.service.save_cadet_size_entry(
+                cadet_id=int(self.selected_fitting_cadet_id or 0),
+                size_entry_id=self.selected_fitting_size_entry_id,
+                size_label=self.fitting_size_label_var.get(),
+                size_value=self.fitting_size_value_var.get(),
+                notes=self.fitting_notes_var.get(),
+            ),
+            success_message="Cadet fitting size saved.",
+            on_success=on_success,
+        )
+
+    def _delete_fitting_size(self) -> None:
+        if self.selected_fitting_cadet_id is None or self.selected_fitting_size_entry_id is None:
+            self._show_error("Select a saved fitting size first.")
+            return
+        if not messagebox.askyesno(
+            "Delete Fitting Size",
+            "Delete the selected fitting size from this cadet's profile?",
+            parent=self,
+        ):
+            return
+
+        cadet_id = int(self.selected_fitting_cadet_id)
+        entry_id = int(self.selected_fitting_size_entry_id)
+
+        def on_success(_result: object) -> None:
+            self.selected_fitting_size_entry_id = None
+            self._load_fitting_cadet(cadet_id)
+            self._clear_fitting_size_form()
+
+        self._run_action(
+            lambda: self.service.delete_cadet_size_entry(cadet_id=cadet_id, size_entry_id=entry_id),
+            success_message="Cadet fitting size deleted.",
+            on_success=on_success,
+        )
+
+    def _clear_fitting_size_form(self) -> None:
+        self.selected_fitting_size_entry_id = None
+        self.fitting_size_label_var.set("")
+        self.fitting_size_value_var.set("")
+        self.fitting_notes_var.set("")
 
     def refresh_return_cadets(self) -> None:
         rows = self.service.list_cadets(search=self.return_cadet_search_var.get())
@@ -3068,6 +3376,7 @@ class InventoryApp(tk.Tk):
         def on_success(cadet: dict[str, Any]) -> None:
             self.selected_cadet_id = int(cadet["cadet_id"])
             self.refresh_cadets()
+            self.refresh_cadet_fitting_index()
             self._load_cadet_details(self.selected_cadet_id)
 
         is_update = self.selected_cadet_id is not None
@@ -3283,7 +3592,10 @@ class InventoryApp(tk.Tk):
 
         def on_success(_result: object) -> None:
             self.selected_cadet_id = None
+            if self.selected_fitting_cadet_id == deleted_cadet_id:
+                self.selected_fitting_cadet_id = None
             self.refresh_cadets()
+            self.refresh_cadet_fitting_index()
             self._clear_cadet_form()
 
         self._run_action(
@@ -4552,11 +4864,16 @@ class InventoryApp(tk.Tk):
         if not self.report_columns:
             self._show_error("Load a report before exporting.")
             return
+        date_suffix = ""
+        if self.report_start_date_var.get().strip() or self.report_end_date_var.get().strip():
+            start_token = self.report_start_date_var.get().strip() or "earliest"
+            end_token = self.report_end_date_var.get().strip() or "today"
+            date_suffix = f"_{start_token}_to_{end_token}"
         filename = filedialog.asksaveasfilename(
             title="Export Report To CSV",
             defaultextension=".csv",
             filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-            initialfile=f"{self.report_type_var.get().replace(' ', '_').lower()}.csv",
+            initialfile=f"{self.report_type_var.get().replace(' ', '_').lower()}{date_suffix}.csv",
         )
         if not filename:
             return
@@ -4569,6 +4886,12 @@ class InventoryApp(tk.Tk):
         self._run_action(
             lambda: self.service.export_inventory_spreadsheet(open_after=True),
             success_message="Inventory spreadsheet exported.",
+        )
+
+    def _export_complete_inventory_spreadsheet(self) -> None:
+        self._run_action(
+            lambda: self.service.export_complete_inventory_spreadsheet(open_after=True),
+            success_message="Complete A.C.E. inventory spreadsheet exported.",
         )
 
     def _import_wings_inventory(self) -> None:
@@ -5044,7 +5367,7 @@ A.C.E. Manual
             width = 130
             if column in {"notes", "condition_notes"}:
                 width = 340
-            elif column in {"item_name", "cadet_email", "equipment_name"}:
+            elif column in {"item_name", "cadet_email", "equipment_name", "size_label"}:
                 width = 240
             elif column in {"current_holder"}:
                 width = 240
@@ -5062,7 +5385,7 @@ A.C.E. Manual
                 width = 205
             elif column in {"category", "variant", "item_type"}:
                 width = 145
-            elif column in {"transaction_id", "cadet_id", "admin_id"}:
+            elif column in {"transaction_id", "cadet_id", "admin_id", "size_entry_id"}:
                 width = 95
             elif column in {"print_copies"}:
                 width = 95
@@ -5080,6 +5403,7 @@ A.C.E. Manual
             values = [row.get(column, "") for column in columns]
             if hasattr(self, "cadet_tree") and (
                 tree is self.cadet_tree or tree is getattr(self, "return_cadet_tree", None)
+                or tree is getattr(self, "fitting_cadet_tree", None)
             ):
                 item_id = str(row.get("cadet_id", f"row-{index}"))
             elif hasattr(self, "admin_tree") and tree is self.admin_tree:
@@ -5161,3 +5485,5 @@ A.C.E. Manual
                 self.return_scan_entry.focus_set()
         elif current_tab == "WINGS Export":
             self.refresh_wings_export()
+        elif current_tab == "Cadet Fitting Index":
+            self.refresh_cadet_fitting_index()

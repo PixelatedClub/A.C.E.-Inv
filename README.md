@@ -28,11 +28,15 @@ The application starts with:
 - Explicit returning-cadet selection with individual or all-held-item returns
 - Permanent-issue and purchase disposition from each cadet's checked-out inventory
 - Cadet records and complete transaction history
-- Inventory, readiness, and accountability reports
+- Inventory, readiness, and accountability reports with inclusive start/end date filters
+- One-click current-week and trailing-seven-day report presets with filtered CSV export
+- Dedicated Cadet Fitting Index for recording uniform sizes and measurements by cadet
 - Dedicated acquired/purchased-items report with CSV export
 - Dual-location compressed backups with retention controls
 - Portable, relative data paths for flash-drive use
 - Built-in index management for WINGS and custom items
+- Automatic item-number coverage: every inventory row has an official WINGS number or an explicit local A.C.E. number
+- Separate complete-inventory Excel export that includes local-only items without putting them in the official WINGS import file
 - Custom-item category and subcategory suggestions based on values already in use
 - Official WINGS male/female officer cloth ranks (867-878) and senior mini-metal ranks (2348-2349), plus local ranks where no official WINGS match exists
 - Optional alternate app-icon mode hidden in the Credits screen

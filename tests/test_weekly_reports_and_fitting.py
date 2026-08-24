@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+import gc
+import tempfile
+import unittest
+from pathlib import Path
+
+from inventory_app.config import AppSettings
+from inventory_app.services import InventoryError, InventoryService
+
+
+class WeeklyReportsAndFittingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        root = Path(self.temporary_directory.name)
+        self.settings = AppSettings(
+            db_path=str(root / "portable" / "inventory.db"),
+            backup_interval_ops=1000,
+        )
+        self.service = InventoryService(self.settings)
+
+    def tearDown(self) -> None:
+        self.service = None  # type: ignore[assignment]
+        gc.collect()
+        self.temporary_directory.cleanup()
+
+    def _create_checked_out_item(self, suffix: str) -> int:
+        item = self.service.save_generated_barcode(
+            category="Test Gear",
+            variant=f"Size {suffix}",
+            item_type="Weekly Report Test",
+            item_name=f"Weekly Item {suffix}",
+            units_per_barcode=1,
+        )
+        self.service.checkout_item(
+            barcode_id=str(item["barcode_id"]),
+            cadet_name="Weekly, A, Cadet",
+            cadet_email="weekly@example.com",
+            quantity=1,
+            approved_by={"role": "CADRE", "display_name": "CADRE", "admin_id": None},
+        )
+        with self.service.database.connect() as connection:
+            row = connection.execute(
+                "SELECT MAX(transaction_id) AS transaction_id FROM transactions"
+            ).fetchone()
+        return int(row["transaction_id"])
+
+    def test_reports_filter_by_inclusive_date_range(self) -> None:
+        checkout_in_range = self._create_checked_out_item("A")
+        closed_in_range = self._create_checked_out_item("B")
+        old_open_checkout = self._create_checked_out_item("C")
+
+        with self.service.database.connect() as connection:
+            connection.execute(
+                "UPDATE transactions SET checkout_time = ? WHERE transaction_id = ?",
+                ("2026-08-18T09:00:00-05:00", checkout_in_range),
+            )
+            connection.execute(
+                """
+                UPDATE transactions
+                SET checkout_time = ?, return_time = ?, disposition = 'Returned'
+                WHERE transaction_id = ?
+                """,
+                (
+                    "2026-08-10T09:00:00-05:00",
+                    "2026-08-19T15:00:00-05:00",
+                    closed_in_range,
+                ),
+            )
+            connection.execute(
+                "UPDATE transactions SET checkout_time = ? WHERE transaction_id = ?",
+                ("2026-08-01T09:00:00-05:00", old_open_checkout),
+            )
+            connection.commit()
+
+        _, history = self.service.get_report(
+            "Transaction History",
+            start_date="2026-08-17",
+            end_date="2026-08-23",
+        )
+        self.assertEqual(
+            {int(row["transaction_id"]) for row in history},
+            {checkout_in_range, closed_in_range},
+        )
+
+        _, checked_out = self.service.get_report(
+            "Checked Out Items",
+            start_date="2026-08-17",
+            end_date="2026-08-23",
+        )
+        self.assertEqual(len(checked_out), 1)
+        self.assertEqual(checked_out[0]["checkout_time"], "2026-08-18T09:00:00-05:00")
+
+    def test_report_date_validation_is_clear(self) -> None:
+        with self.assertRaisesRegex(InventoryError, "YYYY-MM-DD"):
+            self.service.get_report("Transaction History", start_date="08/17/2026")
+        with self.assertRaisesRegex(InventoryError, "before start"):
+            self.service.get_report(
+                "Transaction History",
+                start_date="2026-08-24",
+                end_date="2026-08-17",
+            )
+
+    def test_cadet_fitting_sizes_can_be_saved_updated_and_deleted(self) -> None:
+        cadet = self.service.save_cadet(
+            cadet_name="Fitting, A, Cadet",
+            cadet_email="fitting@example.com",
+        )
+        saved = self.service.save_cadet_size_entry(
+            cadet_id=int(cadet["cadet_id"]),
+            size_label="Blues Trousers",
+            size_value="32R",
+            notes="Verified during fitting.",
+        )
+        self.assertEqual(saved["size_value"], "32R")
+
+        updated = self.service.save_cadet_size_entry(
+            cadet_id=int(cadet["cadet_id"]),
+            size_entry_id=int(saved["size_entry_id"]),
+            size_label="Blues Trousers",
+            size_value="33R",
+            notes="Adjusted after try-on.",
+        )
+        self.assertEqual(updated["size_value"], "33R")
+        details = self.service.get_cadet_details(int(cadet["cadet_id"]))
+        self.assertEqual(len(details["size_entries"]), 1)
+        self.assertEqual(details["size_entries"][0]["notes"], "Adjusted after try-on.")
+
+        self.service.delete_cadet_size_entry(
+            cadet_id=int(cadet["cadet_id"]),
+            size_entry_id=int(saved["size_entry_id"]),
+        )
+        self.assertEqual(self.service.list_cadet_size_entries(int(cadet["cadet_id"])), [])
+
+    def test_every_inventory_row_receives_official_or_local_item_number(self) -> None:
+        barcode = self.service.create_manual_item(
+            barcode_id="CUSTOM-LOCAL-1",
+            item_name="Det Polo",
+            category="DETACHMENT",
+            variant="M",
+            item_type="POLO",
+            quantity=2,
+        )
+        with self.service.database.connect() as connection:
+            item = connection.execute(
+                "SELECT wings_item_no FROM items WHERE barcode_id = ?",
+                (barcode,),
+            ).fetchone()
+        self.assertTrue(str(item["wings_item_no"]).startswith("LOCAL-AUTO-"))
+        self.assertEqual(self.service.inventory_item_number_audit()["missing_rows"], 0)
+        self.assertEqual(self.service.list_wings_export_rows(), [])
+        complete_rows = self.service.list_complete_inventory_export_rows()
+        self.assertEqual(len(complete_rows), 1)
+        self.assertTrue(str(complete_rows[0]["Item No"]).startswith("LOCAL-AUTO-"))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -67,6 +67,18 @@ CREATE TABLE IF NOT EXISTS cadets (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cadet_size_entries (
+    size_entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cadet_id INTEGER NOT NULL,
+    size_label TEXT NOT NULL COLLATE NOCASE,
+    size_value TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(cadet_id, size_label),
+    FOREIGN KEY (cadet_id) REFERENCES cadets (cadet_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS transactions (
     transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
     barcode_id TEXT NOT NULL,
@@ -139,6 +151,7 @@ CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_wings_catalog_name ON wings_catalog(item_name);
 CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
 CREATE INDEX IF NOT EXISTS idx_cadets_full_name ON cadets(full_name);
+CREATE INDEX IF NOT EXISTS idx_cadet_size_entries_cadet ON cadet_size_entries(cadet_id);
 CREATE INDEX IF NOT EXISTS idx_admin_codes_active ON admin_codes(is_active);
 CREATE INDEX IF NOT EXISTS idx_transactions_barcode_open ON transactions(barcode_id, return_time);
 CREATE INDEX IF NOT EXISTS idx_transactions_cadet_email ON transactions(cadet_email);

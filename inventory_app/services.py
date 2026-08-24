@@ -5,7 +5,7 @@ import hashlib
 import re
 import sqlite3
 import zipfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -39,6 +39,7 @@ EASTER_EGG_CATALOG_VALUES = {
     "item_name": {str(entry["item_name"]).strip().upper() for entry in EASTER_EGG_OUTFIT_HISTORY},
 }
 RANK_CATALOG_VERSION = "rank-catalog-v4-official-metal-no-notes"
+LOCAL_INVENTORY_MAPPING_SOURCE = "A.C.E. Local Inventory Mapping"
 RANKS = (
     ("GMC100", "GMC 100 (C/4C)"),
     ("GMC200", "GMC 200 (C/3C)"),
@@ -175,10 +176,86 @@ class InventoryService:
         self.settings = settings
         self.database = InventoryDatabase(settings)
         self._seed_rank_catalog()
+        self._ensure_inventory_item_numbers()
 
     def replace_settings(self, settings: AppSettings) -> None:
         self.settings = settings
         self.database.swap_settings(settings)
+        self._ensure_inventory_item_numbers()
+
+    def _ensure_inventory_item_numbers(self) -> int:
+        """Give every inventory row an official or explicit local catalog number."""
+        updated_count = 0
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT barcode_id, item_name, category, variant, item_type
+                FROM items
+                WHERE wings_item_no IS NULL OR trim(wings_item_no) = ''
+                ORDER BY barcode_id
+                """
+            ).fetchall()
+            for row in rows:
+                item_no = self._ensure_local_inventory_catalog_entry(connection, row)
+                connection.execute(
+                    "UPDATE items SET wings_item_no = ?, updated_at = ? WHERE barcode_id = ?",
+                    (item_no, utc_now(), row["barcode_id"]),
+                )
+                updated_count += 1
+            connection.commit()
+        if updated_count:
+            self.database.note_write()
+        return updated_count
+
+    @staticmethod
+    def _base_inventory_variant(variant: str) -> str:
+        return re.sub(r"\s+(?:packed|unpacked)\s*$", "", str(variant), flags=re.IGNORECASE).strip()
+
+    def _ensure_local_inventory_catalog_entry(
+        self,
+        connection: sqlite3.Connection,
+        item: sqlite3.Row | dict[str, Any],
+    ) -> str:
+        item_name = " ".join(str(item["item_name"] or "Local Inventory Item").split())
+        category = " ".join(str(item["category"] or "Other").split())
+        variant = " ".join(str(item["variant"] or "Standard").split())
+        item_type = " ".join(str(item["item_type"] or item_name).split())
+        base_variant = self._base_inventory_variant(variant) or variant
+        identity = "|".join(
+            value.casefold() for value in (item_name, category, base_variant, item_type)
+        )
+        readable = re.sub(r"[^A-Z0-9]+", "-", f"{item_name}-{base_variant}".upper()).strip("-")
+        readable = readable[:38].rstrip("-") or "ITEM"
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8].upper()
+        item_no = f"LOCAL-AUTO-{readable}-{digest}"
+        paired_types = ("TROUSER", "PANT", "SHORT", "SHOE", "BOOT")
+        uom = "PR" if any(token in item_type.upper() for token in paired_types) else "EA"
+        connection.execute(
+            """
+            INSERT INTO wings_catalog(
+                item_no, item_name, size, category, subcategory, sex,
+                stock_number, uom, writeoffs, source, is_wings
+            ) VALUES (?, ?, ?, ?, ?, '', '', ?, '', ?, 0)
+            ON CONFLICT(item_no) DO UPDATE SET
+                item_name = excluded.item_name,
+                size = excluded.size,
+                category = excluded.category,
+                subcategory = excluded.subcategory,
+                uom = excluded.uom,
+                source = excluded.source,
+                is_wings = 0
+            """,
+            (
+                item_no,
+                item_name,
+                base_variant,
+                category,
+                item_type,
+                uom,
+                LOCAL_INVENTORY_MAPPING_SOURCE,
+            ),
+        )
+        return item_no
 
     def clone_database(self, target_path: Path) -> Path:
         return self.database.clone_database(target_path)
@@ -1523,6 +1600,9 @@ class InventoryService:
                 ).fetchone()
                 if item is None:
                     raise InventoryError("Existing barcode could not be loaded for restock.")
+                resolved_item_no = preview.get("wings_item_no") or wings_item_no
+                if not str(resolved_item_no or "").strip():
+                    resolved_item_no = self._ensure_local_inventory_catalog_entry(connection, preview)
                 merged_notes = self._append_note(item["notes"], notes)
                 connection.execute(
                     """
@@ -1538,7 +1618,7 @@ class InventoryService:
                     """,
                     (
                         preview["item_name"],
-                        preview.get("wings_item_no") or wings_item_no or None,
+                        resolved_item_no,
                         units_per_barcode,
                         units_per_barcode,
                         merged_notes,
@@ -1559,6 +1639,9 @@ class InventoryService:
                 action = "restocked"
             else:
                 now = utc_now()
+                resolved_item_no = preview.get("wings_item_no") or wings_item_no
+                if not str(resolved_item_no or "").strip():
+                    resolved_item_no = self._ensure_local_inventory_catalog_entry(connection, preview)
                 connection.execute(
                     """
                     INSERT INTO items(
@@ -1569,7 +1652,7 @@ class InventoryService:
                     """,
                     (
                         preview["barcode_id"],
-                        preview.get("wings_item_no") or wings_item_no or None,
+                        resolved_item_no,
                         preview["item_name"],
                         preview["category"],
                         preview["variant"],
@@ -1764,15 +1847,36 @@ class InventoryService:
                 raise InventoryError("That barcode already exists. Restock it instead of creating a duplicate.")
 
             now = utc_now()
+            local_item_no = self._ensure_local_inventory_catalog_entry(
+                connection,
+                {
+                    "item_name": item_name,
+                    "category": category,
+                    "variant": variant,
+                    "item_type": item_type,
+                },
+            )
             connection.execute(
                 """
                 INSERT INTO items(
-                    barcode_id, item_name, category, variant, item_type, status,
+                    barcode_id, wings_item_no, item_name, category, variant, item_type, status,
                     notes, total_quantity, available_quantity, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, 'Available', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'Available', ?, ?, ?, ?, ?)
                 """,
-                (barcode, item_name, category, variant, item_type, notes.strip(), quantity, quantity, now, now),
+                (
+                    barcode,
+                    local_item_no,
+                    item_name,
+                    category,
+                    variant,
+                    item_type,
+                    notes.strip(),
+                    quantity,
+                    quantity,
+                    now,
+                    now,
+                ),
             )
             self._record_catalog_values(connection, category, variant, item_type, item_name)
             connection.commit()
@@ -1890,6 +1994,15 @@ class InventoryService:
         created_records: list[dict[str, Any]] = []
 
         with self.database.connect() as connection:
+            local_item_no = self._ensure_local_inventory_catalog_entry(
+                connection,
+                {
+                    "item_name": item_name,
+                    "category": category,
+                    "variant": variant,
+                    "item_type": item_type,
+                },
+            )
             for _ in range(label_count):
                 barcode_id = self._next_barcode_for_prefix(
                     connection,
@@ -1902,13 +2015,14 @@ class InventoryService:
                 connection.execute(
                     """
                     INSERT INTO items(
-                        barcode_id, item_name, category, variant, item_type, status,
+                        barcode_id, wings_item_no, item_name, category, variant, item_type, status,
                         notes, total_quantity, available_quantity, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, 'Available', ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Available', ?, ?, ?, ?, ?)
                     """,
                     (
                         barcode_id,
+                        local_item_no,
                         item_name,
                         category,
                         variant,
@@ -2027,6 +2141,123 @@ class InventoryService:
         self.database.note_write()
         return dict(row)
 
+    def save_cadet_size_entry(
+        self,
+        *,
+        cadet_id: int,
+        size_label: str,
+        size_value: str,
+        notes: str = "",
+        size_entry_id: int | None = None,
+    ) -> dict[str, Any]:
+        cleaned_label = " ".join(str(size_label).split())
+        cleaned_value = " ".join(str(size_value).split())
+        cleaned_notes = str(notes).strip()
+        if not cleaned_label:
+            raise InventoryError("Size item or measurement is required.")
+        if not cleaned_value:
+            raise InventoryError("Size or measurement value is required.")
+
+        with self.database.connect() as connection:
+            cadet = connection.execute(
+                "SELECT cadet_id FROM cadets WHERE cadet_id = ?",
+                (int(cadet_id),),
+            ).fetchone()
+            if cadet is None:
+                raise InventoryError("Saved cadet record not found.")
+            now = utc_now()
+            try:
+                if size_entry_id is not None:
+                    existing = connection.execute(
+                        "SELECT size_entry_id FROM cadet_size_entries WHERE size_entry_id = ? AND cadet_id = ?",
+                        (int(size_entry_id), int(cadet_id)),
+                    ).fetchone()
+                    if existing is None:
+                        raise InventoryError("Cadet size entry not found.")
+                    connection.execute(
+                        """
+                        UPDATE cadet_size_entries
+                        SET size_label = ?, size_value = ?, notes = ?, updated_at = ?
+                        WHERE size_entry_id = ? AND cadet_id = ?
+                        """,
+                        (
+                            cleaned_label,
+                            cleaned_value,
+                            cleaned_notes,
+                            now,
+                            int(size_entry_id),
+                            int(cadet_id),
+                        ),
+                    )
+                    resolved_id = int(size_entry_id)
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO cadet_size_entries(
+                            cadet_id, size_label, size_value, notes, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(cadet_id, size_label) DO UPDATE SET
+                            size_value = excluded.size_value,
+                            notes = excluded.notes,
+                            updated_at = excluded.updated_at
+                        """,
+                        (int(cadet_id), cleaned_label, cleaned_value, cleaned_notes, now, now),
+                    )
+                    resolved = connection.execute(
+                        """
+                        SELECT size_entry_id
+                        FROM cadet_size_entries
+                        WHERE cadet_id = ? AND size_label = ? COLLATE NOCASE
+                        """,
+                        (int(cadet_id), cleaned_label),
+                    ).fetchone()
+                    resolved_id = int(resolved["size_entry_id"])
+            except sqlite3.IntegrityError as exc:
+                raise InventoryError("That cadet already has an entry with this size label.") from exc
+
+            row = connection.execute(
+                """
+                SELECT size_entry_id, cadet_id, size_label, size_value, notes, created_at, updated_at
+                FROM cadet_size_entries
+                WHERE size_entry_id = ?
+                """,
+                (resolved_id,),
+            ).fetchone()
+            connection.commit()
+
+        self.database.note_write()
+        return dict(row)
+
+    def list_cadet_size_entries(self, cadet_id: int) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            cadet = connection.execute(
+                "SELECT cadet_id FROM cadets WHERE cadet_id = ?",
+                (int(cadet_id),),
+            ).fetchone()
+            if cadet is None:
+                raise InventoryError("Saved cadet record not found.")
+            rows = connection.execute(
+                """
+                SELECT size_entry_id, cadet_id, size_label, size_value, notes, created_at, updated_at
+                FROM cadet_size_entries
+                WHERE cadet_id = ?
+                ORDER BY size_label COLLATE NOCASE, size_entry_id
+                """,
+                (int(cadet_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_cadet_size_entry(self, *, cadet_id: int, size_entry_id: int) -> None:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM cadet_size_entries WHERE size_entry_id = ? AND cadet_id = ?",
+                (int(size_entry_id), int(cadet_id)),
+            )
+            if cursor.rowcount < 1:
+                raise InventoryError("Cadet size entry not found.")
+            connection.commit()
+        self.database.note_write()
+
     def list_cadets(self, *, search: str = "") -> list[dict[str, Any]]:
         conditions = [self._not_in_clause("c.cadet_id", sorted(RESERVED_CADET_IDS))]
         params: list[Any] = []
@@ -2137,12 +2368,22 @@ class InventoryService:
                 """,
                 (cadet_id, cadet["email"], *EASTER_EGG_BARCODE_IDS),
             ).fetchall()
+            size_entries = connection.execute(
+                """
+                SELECT size_entry_id, cadet_id, size_label, size_value, notes, created_at, updated_at
+                FROM cadet_size_entries
+                WHERE cadet_id = ?
+                ORDER BY size_label COLLATE NOCASE, size_entry_id
+                """,
+                (cadet_id,),
+            ).fetchall()
 
         history_rows = [dict(row) for row in history]
         return {
             "cadet": dict(cadet),
             "current_items": [dict(row) for row in current_items],
             "history": history_rows,
+            "size_entries": [dict(row) for row in size_entries],
             "acquired_items": sum(
                 1 for row in history_rows if row["disposition"] in ACQUISITION_DISPOSITIONS
             ),
@@ -2682,12 +2923,69 @@ class InventoryService:
         self.database.note_write()
         return returned_rows
 
-    def get_report(self, report_name: str) -> tuple[list[str], list[dict[str, Any]]]:
+    def get_report(
+        self,
+        report_name: str,
+        *,
+        start_date: str = "",
+        end_date: str = "",
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        start_day = self._parse_report_date(start_date, field_name="Start date")
+        end_day = self._parse_report_date(end_date, field_name="End date")
+        if start_day is not None and end_day is not None and end_day < start_day:
+            raise InventoryError("End date cannot be before start date.")
+
         if report_name == "Checked Out Items":
-            return self._checked_out_report()
-        if report_name == "Acquired / Purchased Items":
-            return self._acquired_items_report()
-        return self._transaction_history_report()
+            columns, rows = self._checked_out_report()
+            date_fields = ("checkout_time",)
+        elif report_name == "Acquired / Purchased Items":
+            columns, rows = self._acquired_items_report()
+            date_fields = ("acquired_time",)
+        else:
+            columns, rows = self._transaction_history_report()
+            date_fields = ("checkout_time", "closed_time")
+        if start_day is None and end_day is None:
+            return columns, rows
+        return columns, [
+            row
+            for row in rows
+            if self._report_row_matches_date_range(
+                row,
+                date_fields=date_fields,
+                start_day=start_day,
+                end_day=end_day,
+            )
+        ]
+
+    @staticmethod
+    def _parse_report_date(value: str, *, field_name: str) -> date | None:
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            return None
+        try:
+            return date.fromisoformat(cleaned)
+        except ValueError as exc:
+            raise InventoryError(f"{field_name} must use YYYY-MM-DD format.") from exc
+
+    def _report_row_matches_date_range(
+        self,
+        row: dict[str, Any],
+        *,
+        date_fields: tuple[str, ...],
+        start_day: date | None,
+        end_day: date | None,
+    ) -> bool:
+        for field in date_fields:
+            parsed = self._parse_export_timestamp(row.get(field))
+            if parsed is None:
+                continue
+            event_day = parsed.astimezone().date() if parsed.tzinfo is not None else parsed.date()
+            if start_day is not None and event_day < start_day:
+                continue
+            if end_day is not None and event_day > end_day:
+                continue
+            return True
+        return False
 
     def export_rows_to_csv(self, path: Path, columns: list[str], rows: list[dict[str, Any]]) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2713,10 +3011,32 @@ class InventoryService:
             open_file(export_path)
         return export_path
 
+    def export_complete_inventory_spreadsheet(self, *, open_after: bool = True) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_dir = self.settings.database_path.parent / "exports"
+        export_path = export_dir / f"ACE_complete_inventory_{timestamp}.xlsx"
+        rows = self.list_complete_inventory_export_rows()
+        self._write_simple_xlsx(
+            export_path,
+            sheet_name="A.C.E. Complete Inventory",
+            columns=list(WINGS_COLUMNS),
+            rows=rows,
+        )
+        if open_after:
+            open_file(export_path)
+        return export_path
+
     def list_wings_export_rows(self) -> list[dict[str, Any]]:
+        return self._list_inventory_export_rows(official_only=True)
+
+    def list_complete_inventory_export_rows(self) -> list[dict[str, Any]]:
+        return self._list_inventory_export_rows(official_only=False)
+
+    def _list_inventory_export_rows(self, *, official_only: bool) -> list[dict[str, Any]]:
+        official_filter = "WHERE catalog.is_wings = 1" if official_only else ""
         with self.database.connect() as connection:
             catalog_rows = connection.execute(
-                """
+                f"""
                 SELECT
                     catalog.item_no,
                     catalog.item_name,
@@ -2728,19 +3048,27 @@ class InventoryService:
                     catalog.uom,
                     catalog.writeoffs,
                     catalog.source,
+                    catalog.is_wings,
                     COALESCE(SUM(items.total_quantity), 0) AS total_quantity,
                     COALESCE(SUM(items.available_quantity), 0) AS available_quantity
                 FROM wings_catalog AS catalog
                 LEFT JOIN items ON items.wings_item_no = catalog.item_no
-                WHERE catalog.is_wings = 1
+                {official_filter}
                 GROUP BY catalog.item_no
                 HAVING COALESCE(SUM(items.total_quantity), 0) > 0
-                ORDER BY CAST(catalog.item_no AS INTEGER)
+                ORDER BY
+                    catalog.is_wings DESC,
+                    CASE WHEN catalog.is_wings = 1 THEN CAST(catalog.item_no AS INTEGER) END,
+                    catalog.item_no
                 """
             ).fetchall()
         return [
             {
-                "Item No": self._format_wings_item_no(row["item_no"]),
+                "Item No": (
+                    self._format_wings_item_no(row["item_no"])
+                    if int(row["is_wings"]) == 1
+                    else str(row["item_no"])
+                ),
                 "Qty Issued": int(row["total_quantity"]) - int(row["available_quantity"]),
                 "Qty Available": int(row["available_quantity"]),
                 "Total in Inventory": int(row["total_quantity"]),
@@ -2756,6 +3084,21 @@ class InventoryService:
             }
             for row in catalog_rows
         ]
+
+    def inventory_item_number_audit(self) -> dict[str, int]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_rows,
+                    SUM(CASE WHEN items.wings_item_no IS NULL OR trim(items.wings_item_no) = '' THEN 1 ELSE 0 END) AS missing_rows,
+                    SUM(CASE WHEN catalog.is_wings = 1 THEN 1 ELSE 0 END) AS official_rows,
+                    SUM(CASE WHEN catalog.is_wings = 0 THEN 1 ELSE 0 END) AS local_rows
+                FROM items
+                LEFT JOIN wings_catalog AS catalog ON catalog.item_no = items.wings_item_no
+                """
+            ).fetchone()
+        return {key: int(row[key] or 0) for key in ("total_rows", "missing_rows", "official_rows", "local_rows")}
 
     def export_cadet_history_spreadsheet(self, cadet_id: int, *, open_after: bool = True) -> Path:
         details = self.get_cadet_details(cadet_id)
@@ -2775,6 +3118,7 @@ class InventoryService:
                 "open_items": len(details["current_items"]),
                 "acquired_items": details["acquired_items"],
                 "history_entries": len(details["history"]),
+                "fitting_size_entries": len(details["size_entries"]),
             }
         ]
 
@@ -2808,8 +3152,21 @@ class InventoryService:
                         "open_items",
                         "acquired_items",
                         "history_entries",
+                        "fitting_size_entries",
                     ],
                     "rows": overview_rows,
+                },
+                {
+                    "sheet_name": "Fitting Sizes",
+                    "columns": [
+                        "size_entry_id",
+                        "size_label",
+                        "size_value",
+                        "notes",
+                        "created_at",
+                        "updated_at",
+                    ],
+                    "rows": details["size_entries"],
                 },
                 {
                     "sheet_name": "Current Items",
