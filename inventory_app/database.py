@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS wings_catalog (
     is_wings INTEGER NOT NULL DEFAULT 1 CHECK (is_wings IN (0, 1))
 );
 
+CREATE TABLE IF NOT EXISTS barcode_aliases (
+    alias_barcode_id TEXT PRIMARY KEY,
+    canonical_barcode_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (canonical_barcode_id) REFERENCES items (barcode_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS cadets (
     cadet_id INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name TEXT NOT NULL,
@@ -148,6 +156,7 @@ CREATE TABLE IF NOT EXISTS ace_feature_flags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
+CREATE INDEX IF NOT EXISTS idx_barcode_aliases_canonical ON barcode_aliases(canonical_barcode_id);
 CREATE INDEX IF NOT EXISTS idx_wings_catalog_name ON wings_catalog(item_name);
 CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
 CREATE INDEX IF NOT EXISTS idx_cadets_full_name ON cadets(full_name);

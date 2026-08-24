@@ -296,6 +296,82 @@ class InventoryEnhancementTests(unittest.TestCase):
         self.assertIn("ceremonial gear", categories)
         self.assertIn("honor guard accessories", subcategories)
 
+    def test_packed_and_unpacked_rows_merge_without_losing_history(self) -> None:
+        catalog = self.service.get_wings_catalog_item("3410")
+        with self.service.database.connect() as connection:
+            now = "2026-08-24T12:00:00-05:00"
+            for barcode, variant, total, available in (
+                ("A0000001", "L Packed", 1, 0),
+                ("A0000002", "L Unpacked", 3, 2),
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO items(
+                        barcode_id, wings_item_no, item_name, category, variant, item_type,
+                        status, notes, total_quantity, available_quantity, created_at, updated_at
+                    ) VALUES (?, '3410', 'PT Shorts', 'PTG', ?, 'Shorts', 'Available', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        barcode,
+                        variant,
+                        "Imported from Auburn Uniform Inventory Test.xlsm, Initial Roster; "
+                        "the original roster code is preserved in Variant.",
+                        total,
+                        available,
+                        now,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO transactions(
+                        barcode_id, cadet_name, cadet_email, checkout_time, disposition
+                    ) VALUES (?, ?, ?, ?, '')
+                    """,
+                    (barcode, f"Cadet {barcode}", f"{barcode.lower()}@example.com", now),
+                )
+            connection.commit()
+
+        self.service = InventoryService(self.settings)
+
+        with self.service.database.connect() as connection:
+            items = connection.execute(
+                "SELECT * FROM items WHERE wings_item_no = '3410' ORDER BY barcode_id"
+            ).fetchall()
+            transactions = connection.execute(
+                "SELECT barcode_id FROM transactions ORDER BY transaction_id"
+            ).fetchall()
+            alias = connection.execute(
+                "SELECT canonical_barcode_id FROM barcode_aliases WHERE alias_barcode_id = 'A0000002'"
+            ).fetchone()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["barcode_id"], "A0000001")
+        self.assertEqual(items[0]["item_name"], catalog["item_name"])
+        self.assertEqual(items[0]["category"], catalog["category"])
+        self.assertEqual(items[0]["variant"], catalog["size"])
+        self.assertEqual(items[0]["item_type"], catalog["subcategory"])
+        self.assertEqual(items[0]["total_quantity"], 4)
+        self.assertEqual(items[0]["available_quantity"], 2)
+        self.assertEqual(items[0]["notes"], "")
+        self.assertEqual([row["barcode_id"] for row in transactions], ["A0000001", "A0000001"])
+        self.assertEqual(alias["canonical_barcode_id"], "A0000001")
+
+        resolved = self.service.get_item("A0000002")
+        self.assertEqual(resolved["barcode_id"], "A0000001")
+        self.service.checkout_item(
+            barcode_id="A0000002",
+            cadet_name="Alias, A, Tester",
+            cadet_email="alias@example.com",
+            quantity=1,
+            approved_by={"role": "CADRE", "display_name": "CADRE", "admin_id": None},
+        )
+        with self.service.database.connect() as connection:
+            latest = connection.execute(
+                "SELECT barcode_id FROM transactions ORDER BY transaction_id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(latest["barcode_id"], "A0000001")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -80,6 +80,16 @@ AUTOMATIC_RANK_MAPPING_NOTE_PATTERN = re.compile(
     r"Mapped from local (?:Soft Blues|Hard Blues) rank LOCAL-RANK-[A-Z0-9-]+ "
     r"to official WINGS item \d+\.$"
 )
+PACKAGING_VARIANT_PATTERN = re.compile(r"\s+(?:packed|unpacked)\s*$", flags=re.IGNORECASE)
+LEGACY_PACKAGING_IMPORT_NOTE = (
+    "Imported from Auburn Uniform Inventory Test.xlsm, Initial Roster; "
+    "the original roster code is preserved in Variant."
+)
+IMPORTED_BLUE_TROUSER_REFERENCES = {
+    "LOCAL-AUTO-BLUES-PANTS-39L-7AEA83E8": ("39 LONG", "8405013778092"),
+    "LOCAL-AUTO-BLUES-PANTS-40R-612ED7A1": ("40 REGULAR", "8405013778104"),
+    "LOCAL-AUTO-BLUES-PANTS-40L-4B39ECB0": ("40 LONG", "8405013778094"),
+}
 EASTER_EGG_EXPORT_PROFILES = [
     {
         "ace_name": "Heart",
@@ -177,11 +187,13 @@ class InventoryService:
         self.database = InventoryDatabase(settings)
         self._seed_rank_catalog()
         self._ensure_inventory_item_numbers()
+        self._reconcile_packaging_variants()
 
     def replace_settings(self, settings: AppSettings) -> None:
         self.settings = settings
         self.database.swap_settings(settings)
         self._ensure_inventory_item_numbers()
+        self._reconcile_packaging_variants()
 
     def _ensure_inventory_item_numbers(self) -> int:
         """Give every inventory row an official or explicit local catalog number."""
@@ -209,7 +221,168 @@ class InventoryService:
 
     @staticmethod
     def _base_inventory_variant(variant: str) -> str:
-        return re.sub(r"\s+(?:packed|unpacked)\s*$", "", str(variant), flags=re.IGNORECASE).strip()
+        return PACKAGING_VARIANT_PATTERN.sub("", str(variant)).strip()
+
+    @staticmethod
+    def _remove_legacy_packaging_note(notes: str | None) -> str:
+        remaining = str(notes or "").replace(LEGACY_PACKAGING_IMPORT_NOTE, "")
+        return "\n".join(line.strip() for line in remaining.splitlines() if line.strip())
+
+    @classmethod
+    def _merge_packaging_notes(cls, rows: list[sqlite3.Row]) -> str:
+        merged: list[str] = []
+        for row in rows:
+            cleaned = cls._remove_legacy_packaging_note(row["notes"])
+            for line in cleaned.splitlines():
+                if line and line not in merged:
+                    merged.append(line)
+        return "\n".join(merged)
+
+    def _reconcile_packaging_variants(self) -> dict[str, int]:
+        """Collapse legacy packed/unpacked rows into one catalog item and keep old labels scannable."""
+        merged_rows = 0
+        normalized_items = 0
+        relinked_transactions = 0
+        reference_updates = 0
+        with self.database.connect() as connection:
+            for item_no, (size, stock_number) in IMPORTED_BLUE_TROUSER_REFERENCES.items():
+                changed = connection.execute(
+                    """
+                    UPDATE wings_catalog
+                    SET item_name = 'TROUSERS, MENS', size = ?, category = 'Pants/Skirt',
+                        subcategory = 'Blues', sex = 'M', stock_number = ?, uom = 'PR',
+                        source = 'USAF HGMAN stock-number reference; WINGS item number absent from attached export',
+                        is_wings = 0
+                    WHERE item_no = ? AND is_wings = 0
+                      AND (
+                          item_name <> 'TROUSERS, MENS' OR size <> ? OR category <> 'Pants/Skirt'
+                          OR subcategory <> 'Blues' OR sex <> 'M' OR stock_number <> ? OR uom <> 'PR'
+                          OR source <> 'USAF HGMAN stock-number reference; WINGS item number absent from attached export'
+                      )
+                    """,
+                    (size, stock_number, item_no, size, stock_number),
+                ).rowcount
+                reference_updates += max(changed, 0)
+            candidates = [
+                row
+                for row in connection.execute(
+                    """
+                    SELECT *
+                    FROM items
+                    WHERE status NOT IN ('Retired', 'Lost')
+                    ORDER BY barcode_id
+                    """
+                ).fetchall()
+                if PACKAGING_VARIANT_PATTERN.search(str(row["variant"] or ""))
+            ]
+            groups: dict[str, list[sqlite3.Row]] = {}
+            for row in candidates:
+                item_no = str(row["wings_item_no"] or "").strip()
+                if item_no:
+                    group_key = f"item-no:{item_no.casefold()}"
+                else:
+                    group_key = "identity:" + "|".join(
+                        str(value or "").strip().casefold()
+                        for value in (
+                            row["item_name"],
+                            row["category"],
+                            self._base_inventory_variant(row["variant"]),
+                            row["item_type"],
+                        )
+                    )
+                groups.setdefault(group_key, []).append(row)
+
+            for rows in groups.values():
+                keeper = min(rows, key=lambda row: str(row["barcode_id"]))
+                keeper_barcode = str(keeper["barcode_id"])
+                item_no = str(keeper["wings_item_no"] or "").strip()
+                catalog = connection.execute(
+                    "SELECT * FROM wings_catalog WHERE item_no = ?",
+                    (item_no,),
+                ).fetchone()
+                if catalog is not None:
+                    item_name = str(catalog["item_name"] or keeper["item_name"])
+                    category = str(catalog["category"] or keeper["category"])
+                    variant = str(catalog["size"] or self._base_inventory_variant(keeper["variant"]))
+                    item_type = str(catalog["subcategory"] or catalog["item_name"] or keeper["item_type"])
+                else:
+                    item_name = str(keeper["item_name"])
+                    category = str(keeper["category"])
+                    variant = self._base_inventory_variant(keeper["variant"])
+                    item_type = str(keeper["item_type"])
+
+                total_quantity = sum(int(row["total_quantity"]) for row in rows)
+                created_at = min(str(row["created_at"]) for row in rows)
+                merged_notes = self._merge_packaging_notes(rows)
+
+                for row in rows:
+                    old_barcode = str(row["barcode_id"])
+                    if old_barcode == keeper_barcode:
+                        continue
+                    changed = connection.execute(
+                        "UPDATE transactions SET barcode_id = ? WHERE barcode_id = ?",
+                        (keeper_barcode, old_barcode),
+                    ).rowcount
+                    relinked_transactions += max(changed, 0)
+                    connection.execute(
+                        """
+                        INSERT INTO barcode_aliases(alias_barcode_id, canonical_barcode_id, created_at, reason)
+                        VALUES (?, ?, ?, 'Packed/unpacked inventory reconciliation')
+                        ON CONFLICT(alias_barcode_id) DO UPDATE SET
+                            canonical_barcode_id = excluded.canonical_barcode_id,
+                            created_at = excluded.created_at,
+                            reason = excluded.reason
+                        """,
+                        (old_barcode, keeper_barcode, utc_now()),
+                    )
+                    connection.execute("DELETE FROM items WHERE barcode_id = ?", (old_barcode,))
+                    merged_rows += 1
+
+                connection.execute(
+                    """
+                    UPDATE items
+                    SET item_name = ?, category = ?, variant = ?, item_type = ?, notes = ?,
+                        total_quantity = ?, created_at = ?, updated_at = ?
+                    WHERE barcode_id = ?
+                    """,
+                    (
+                        item_name,
+                        category,
+                        variant,
+                        item_type,
+                        merged_notes,
+                        total_quantity,
+                        created_at,
+                        utc_now(),
+                        keeper_barcode,
+                    ),
+                )
+                self._sync_item_state(connection, keeper_barcode)
+                self._record_catalog_values(connection, category, variant, item_type, item_name)
+                normalized_items += 1
+
+            if normalized_items:
+                connection.execute(
+                    """
+                    DELETE FROM catalog_values
+                    WHERE kind = 'variant'
+                      AND (lower(value) LIKE '% packed' OR lower(value) LIKE '% unpacked')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM items WHERE lower(items.variant) = lower(catalog_values.value)
+                      )
+                    """
+                )
+            if normalized_items or reference_updates:
+                connection.commit()
+
+        if normalized_items or reference_updates:
+            self.database.note_write()
+        return {
+            "normalized_items": normalized_items,
+            "merged_rows": merged_rows,
+            "relinked_transactions": relinked_transactions,
+            "reference_updates": reference_updates,
+        }
 
     def _ensure_local_inventory_catalog_entry(
         self,
@@ -1715,6 +1888,7 @@ class InventoryService:
         if self._is_easter_egg_barcode(cleaned_barcode):
             return None
         with self.database.connect() as connection:
+            cleaned_barcode = self._resolve_barcode_alias(connection, cleaned_barcode)
             row = connection.execute(
                 "SELECT * FROM items WHERE barcode_id = ?",
                 (cleaned_barcode,),
@@ -1726,6 +1900,7 @@ class InventoryService:
         if self._is_easter_egg_barcode(cleaned_barcode):
             raise InventoryError("Barcode not found in inventory.")
         with self.database.connect() as connection:
+            cleaned_barcode = self._resolve_barcode_alias(connection, cleaned_barcode)
             item = connection.execute(
                 "SELECT * FROM items WHERE barcode_id = ?",
                 (cleaned_barcode,),
@@ -1778,6 +1953,7 @@ class InventoryService:
         )
 
         with self.database.connect() as connection:
+            barcode = self._resolve_barcode_alias(connection, barcode)
             existing = connection.execute(
                 "SELECT * FROM items WHERE barcode_id = ?", (barcode,)
             ).fetchone()
@@ -1889,6 +2065,7 @@ class InventoryService:
         quantity = self._validate_quantity(quantity)
 
         with self.database.connect() as connection:
+            barcode = self._resolve_barcode_alias(connection, barcode)
             item = connection.execute(
                 "SELECT * FROM items WHERE barcode_id = ?",
                 (barcode,),
@@ -1922,6 +2099,7 @@ class InventoryService:
             raise InventoryError("Only Available, Retired, or Lost can be set manually.")
 
         with self.database.connect() as connection:
+            barcode = self._resolve_barcode_alias(connection, barcode)
             item = connection.execute(
                 "SELECT * FROM items WHERE barcode_id = ?",
                 (barcode,),
@@ -1963,6 +2141,7 @@ class InventoryService:
             raise InventoryError("Barcode is required.")
 
         with self.database.connect() as connection:
+            barcode = self._resolve_barcode_alias(connection, barcode)
             item = connection.execute("SELECT 1 FROM items WHERE barcode_id = ?", (barcode,)).fetchone()
             if item is None:
                 raise InventoryError("Barcode not found.")
@@ -2689,6 +2868,7 @@ class InventoryService:
         approval = self._normalize_admin_identity(approved_by)
 
         with self.database.connect() as connection:
+            barcode = self._resolve_barcode_alias(connection, barcode)
             item = connection.execute(
                 "SELECT * FROM items WHERE barcode_id = ?",
                 (barcode,),
@@ -2749,6 +2929,7 @@ class InventoryService:
             cadet = self._upsert_cadet(connection, normalized_name, normalized_email)
             for line in line_items:
                 barcode = str(line.get("barcode_id", "")).strip().upper()
+                barcode = self._resolve_barcode_alias(connection, barcode)
                 quantity = self._validate_quantity(line.get("quantity", 1))
                 item = connection.execute("SELECT * FROM items WHERE barcode_id = ?", (barcode,)).fetchone()
                 if item is None:
@@ -2808,6 +2989,7 @@ class InventoryService:
         approval = self._normalize_admin_identity(approved_by)
 
         with self.database.connect() as connection:
+            barcode = self._resolve_barcode_alias(connection, barcode)
             item = connection.execute(
                 "SELECT * FROM items WHERE barcode_id = ?",
                 (barcode,),
@@ -2872,6 +3054,7 @@ class InventoryService:
         with self.database.connect() as connection:
             for line in line_items:
                 barcode = str(line.get("barcode_id", "")).strip().upper()
+                barcode = self._resolve_barcode_alias(connection, barcode)
                 quantity = self._validate_quantity(line.get("quantity", 1))
                 item = connection.execute("SELECT * FROM items WHERE barcode_id = ?", (barcode,)).fetchone()
                 if item is None:
@@ -4150,6 +4333,21 @@ class InventoryService:
     @staticmethod
     def _is_easter_egg_barcode(barcode_id: str | None) -> bool:
         return str(barcode_id or "").strip().upper() in EASTER_EGG_BARCODE_IDS
+
+    @staticmethod
+    def _resolve_barcode_alias(connection: sqlite3.Connection, barcode_id: str) -> str:
+        resolved = str(barcode_id or "").strip().upper()
+        seen: set[str] = set()
+        while resolved and resolved not in seen:
+            seen.add(resolved)
+            row = connection.execute(
+                "SELECT canonical_barcode_id FROM barcode_aliases WHERE alias_barcode_id = ?",
+                (resolved,),
+            ).fetchone()
+            if row is None:
+                break
+            resolved = str(row["canonical_barcode_id"] or "").strip().upper()
+        return resolved
 
     @staticmethod
     def _is_easter_egg_cadet_id(cadet_id: int | str | None) -> bool:
