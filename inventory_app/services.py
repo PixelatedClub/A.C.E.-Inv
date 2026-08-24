@@ -2326,11 +2326,17 @@ class InventoryService:
         cadet_id: int,
         size_label: str,
         size_value: str,
+        category: str = "",
+        catalog_item_no: str = "",
         notes: str = "",
         size_entry_id: int | None = None,
     ) -> dict[str, Any]:
         cleaned_label = " ".join(str(size_label).split())
         cleaned_value = " ".join(str(size_value).split())
+        cleaned_category = " ".join(str(category).split())
+        cleaned_item_no = str(catalog_item_no).strip()
+        if cleaned_item_no.isdigit():
+            cleaned_item_no = str(int(cleaned_item_no))
         cleaned_notes = str(notes).strip()
         if not cleaned_label:
             raise InventoryError("Size item or measurement is required.")
@@ -2356,12 +2362,15 @@ class InventoryService:
                     connection.execute(
                         """
                         UPDATE cadet_size_entries
-                        SET size_label = ?, size_value = ?, notes = ?, updated_at = ?
+                        SET size_label = ?, size_value = ?, category = ?,
+                            catalog_item_no = ?, notes = ?, updated_at = ?
                         WHERE size_entry_id = ? AND cadet_id = ?
                         """,
                         (
                             cleaned_label,
                             cleaned_value,
+                            cleaned_category,
+                            cleaned_item_no,
                             cleaned_notes,
                             now,
                             int(size_entry_id),
@@ -2373,14 +2382,26 @@ class InventoryService:
                     connection.execute(
                         """
                         INSERT INTO cadet_size_entries(
-                            cadet_id, size_label, size_value, notes, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            cadet_id, size_label, size_value, category, catalog_item_no,
+                            notes, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(cadet_id, size_label) DO UPDATE SET
                             size_value = excluded.size_value,
+                            category = excluded.category,
+                            catalog_item_no = excluded.catalog_item_no,
                             notes = excluded.notes,
                             updated_at = excluded.updated_at
                         """,
-                        (int(cadet_id), cleaned_label, cleaned_value, cleaned_notes, now, now),
+                        (
+                            int(cadet_id),
+                            cleaned_label,
+                            cleaned_value,
+                            cleaned_category,
+                            cleaned_item_no,
+                            cleaned_notes,
+                            now,
+                            now,
+                        ),
                     )
                     resolved = connection.execute(
                         """
@@ -2396,7 +2417,8 @@ class InventoryService:
 
             row = connection.execute(
                 """
-                SELECT size_entry_id, cadet_id, size_label, size_value, notes, created_at, updated_at
+                SELECT size_entry_id, cadet_id, size_label, size_value, category,
+                       catalog_item_no, notes, created_at, updated_at
                 FROM cadet_size_entries
                 WHERE size_entry_id = ?
                 """,
@@ -2417,7 +2439,8 @@ class InventoryService:
                 raise InventoryError("Saved cadet record not found.")
             rows = connection.execute(
                 """
-                SELECT size_entry_id, cadet_id, size_label, size_value, notes, created_at, updated_at
+                SELECT size_entry_id, cadet_id, size_label, size_value, category,
+                       catalog_item_no, notes, created_at, updated_at
                 FROM cadet_size_entries
                 WHERE cadet_id = ?
                 ORDER BY size_label COLLATE NOCASE, size_entry_id
@@ -2425,6 +2448,127 @@ class InventoryService:
                 (int(cadet_id),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_cadet_fitting_categories(self) -> list[str]:
+        """Return searchable catalog categories for the guided cadet fitting index."""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT category
+                FROM wings_catalog
+                WHERE trim(category) <> ''
+                  AND item_no NOT LIKE 'LOCAL-RANK-SB-%'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM hidden_index_items hidden
+                      WHERE hidden.item_no = wings_catalog.item_no
+                  )
+                ORDER BY category COLLATE NOCASE
+                """
+            ).fetchall()
+        return [str(row["category"]).strip() for row in rows]
+
+    def list_cadet_fitting_options(
+        self,
+        *,
+        category: str = "All",
+        search: str = "",
+    ) -> list[dict[str, Any]]:
+        """List known fitting sizes with current stock counts for fast category lookup."""
+        conditions = [
+            "catalog.item_no NOT LIKE 'LOCAL-RANK-SB-%'",
+            "NOT EXISTS (SELECT 1 FROM hidden_index_items hidden WHERE hidden.item_no = catalog.item_no)",
+        ]
+        params: list[Any] = []
+        cleaned_category = str(category).strip()
+        if cleaned_category and cleaned_category != "All":
+            conditions.append("catalog.category = ? COLLATE NOCASE")
+            params.append(cleaned_category)
+        fitting_search_aliases = {
+            "first": "1st",
+            "second": "2d",
+            "lieutenant": "lt",
+            "captain": "capt",
+            "major": "maj",
+            "colonel": "col",
+        }
+        for word in [part for part in str(search).casefold().split() if part]:
+            searchable_word = str(int(word)) if word.isdigit() else fitting_search_aliases.get(word, word)
+            token = f"%{searchable_word}%"
+            conditions.append(
+                """
+                (
+                    lower(catalog.item_no) LIKE ? OR lower(catalog.item_name) LIKE ?
+                    OR lower(catalog.size) LIKE ? OR lower(catalog.category) LIKE ?
+                    OR lower(catalog.subcategory) LIKE ? OR lower(catalog.sex) LIKE ?
+                    OR lower(catalog.stock_number) LIKE ?
+                )
+                """
+            )
+            params.extend([token] * 7)
+
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                WITH inventory_totals AS (
+                    SELECT
+                        wings_item_no,
+                        COALESCE(SUM(total_quantity), 0) AS total_quantity,
+                        COALESCE(SUM(available_quantity), 0) AS available_quantity
+                    FROM items
+                    GROUP BY wings_item_no
+                )
+                SELECT
+                    catalog.item_no,
+                    catalog.item_name,
+                    catalog.size,
+                    catalog.category,
+                    catalog.subcategory,
+                    catalog.sex,
+                    catalog.stock_number,
+                    catalog.source,
+                    catalog.is_wings,
+                    COALESCE(inventory.total_quantity, 0) AS total_quantity,
+                    COALESCE(inventory.available_quantity, 0) AS available_quantity
+                FROM wings_catalog catalog
+                LEFT JOIN inventory_totals inventory
+                    ON inventory.wings_item_no = catalog.item_no
+                WHERE {' AND '.join(conditions)}
+                ORDER BY
+                    catalog.category COLLATE NOCASE,
+                    catalog.subcategory COLLATE NOCASE,
+                    catalog.item_name COLLATE NOCASE,
+                    catalog.sex COLLATE NOCASE,
+                    catalog.size COLLATE NOCASE,
+                    catalog.is_wings DESC,
+                    CASE WHEN catalog.is_wings = 1 THEN CAST(catalog.item_no AS INTEGER) END,
+                    catalog.item_no
+                """,
+                params,
+            ).fetchall()
+
+        options: list[dict[str, Any]] = []
+        for source_row in rows:
+            row = dict(source_row)
+            raw_item_no = str(row["item_no"])
+            item_name = str(row["item_name"] or "").strip()
+            sex = str(row["sex"] or "").strip().upper()
+            lowered_name = item_name.casefold()
+            if sex == "M" and not any(token in lowered_name for token in ("men", "male")):
+                fitting_label = f"{item_name} (Men's)"
+            elif sex == "F" and not any(token in lowered_name for token in ("women", "female")):
+                fitting_label = f"{item_name} (Women's)"
+            else:
+                fitting_label = item_name
+            row["item_no_key"] = raw_item_no
+            row["item_no"] = (
+                self._format_wings_item_no(raw_item_no)
+                if int(row["is_wings"]) == 1
+                else raw_item_no
+            )
+            row["fitting_label"] = fitting_label
+            options.append(row)
+        return options
 
     def delete_cadet_size_entry(self, *, cadet_id: int, size_entry_id: int) -> None:
         with self.database.connect() as connection:
@@ -2549,7 +2693,8 @@ class InventoryService:
             ).fetchall()
             size_entries = connection.execute(
                 """
-                SELECT size_entry_id, cadet_id, size_label, size_value, notes, created_at, updated_at
+                SELECT size_entry_id, cadet_id, size_label, size_value, category,
+                       catalog_item_no, notes, created_at, updated_at
                 FROM cadet_size_entries
                 WHERE cadet_id = ?
                 ORDER BY size_label COLLATE NOCASE, size_entry_id
@@ -3343,8 +3488,10 @@ class InventoryService:
                     "sheet_name": "Fitting Sizes",
                     "columns": [
                         "size_entry_id",
+                        "category",
                         "size_label",
                         "size_value",
+                        "catalog_item_no",
                         "notes",
                         "created_at",
                         "updated_at",

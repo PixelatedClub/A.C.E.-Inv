@@ -110,15 +110,21 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
             cadet_id=int(cadet["cadet_id"]),
             size_label="Blues Trousers",
             size_value="32R",
+            category="Pants/Skirt",
+            catalog_item_no="1234",
             notes="Verified during fitting.",
         )
         self.assertEqual(saved["size_value"], "32R")
+        self.assertEqual(saved["category"], "Pants/Skirt")
+        self.assertEqual(saved["catalog_item_no"], "1234")
 
         updated = self.service.save_cadet_size_entry(
             cadet_id=int(cadet["cadet_id"]),
             size_entry_id=int(saved["size_entry_id"]),
             size_label="Blues Trousers",
             size_value="33R",
+            category="Pants/Skirt",
+            catalog_item_no="1234",
             notes="Adjusted after try-on.",
         )
         self.assertEqual(updated["size_value"], "33R")
@@ -131,6 +137,30 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
             size_entry_id=int(saved["size_entry_id"]),
         )
         self.assertEqual(self.service.list_cadet_size_entries(int(cadet["cadet_id"])), [])
+
+    def test_fitting_catalog_filters_by_category_and_shows_current_availability(self) -> None:
+        created = self.service.save_generated_barcode(
+            category="ignored",
+            variant="ignored",
+            item_type="ignored",
+            item_name="ignored",
+            wings_item_no="871",
+            units_per_barcode=4,
+        )
+        self.assertEqual(created["available_quantity"], 4)
+
+        categories = self.service.list_cadet_fitting_categories()
+        self.assertIn("Insignia", categories)
+        options = self.service.list_cadet_fitting_options(
+            category="Insignia",
+            search="871 first lt female",
+        )
+        matching = [row for row in options if row["item_no_key"] == "871"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["available_quantity"], 4)
+        self.assertEqual(matching[0]["total_quantity"], 4)
+        self.assertEqual(matching[0]["size"], "C/1ST LT")
+        self.assertIn("FEMALE", matching[0]["fitting_label"])
 
     def test_every_inventory_row_receives_official_or_local_item_number(self) -> None:
         barcode = self.service.create_manual_item(

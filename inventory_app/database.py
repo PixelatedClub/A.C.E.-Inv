@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS cadet_size_entries (
     cadet_id INTEGER NOT NULL,
     size_label TEXT NOT NULL COLLATE NOCASE,
     size_value TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    catalog_item_no TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -228,6 +230,19 @@ class InventoryDatabase:
         connection.execute(
             "UPDATE cadets SET updated_at = COALESCE(updated_at, created_at) WHERE updated_at IS NULL OR updated_at = ''"
         )
+
+        size_entry_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(cadet_size_entries)").fetchall()
+        }
+        if "category" not in size_entry_columns:
+            connection.execute(
+                "ALTER TABLE cadet_size_entries ADD COLUMN category TEXT NOT NULL DEFAULT ''"
+            )
+        if "catalog_item_no" not in size_entry_columns:
+            connection.execute(
+                "ALTER TABLE cadet_size_entries ADD COLUMN catalog_item_no TEXT NOT NULL DEFAULT ''"
+            )
 
         admin_columns = {row["name"] for row in connection.execute("PRAGMA table_info(admin_codes)").fetchall()}
         if "code_value" not in admin_columns:

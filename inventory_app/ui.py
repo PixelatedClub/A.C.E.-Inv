@@ -397,12 +397,18 @@ class InventoryApp(tk.Tk):
         self.cadet_summary_var = tk.StringVar(value="Select or save a cadet to view issued items.")
         self.fitting_search_var = tk.StringVar()
         self.fitting_summary_var = tk.StringVar(value="Select a cadet to catalog fitting sizes.")
+        self.fitting_catalog_category_var = tk.StringVar(value="All")
+        self.fitting_catalog_search_var = tk.StringVar()
+        self.fitting_catalog_summary_var = tk.StringVar(value="Choose a category or search the equipment catalog.")
         self.fitting_size_label_var = tk.StringVar()
         self.fitting_size_value_var = tk.StringVar()
+        self.fitting_entry_category_var = tk.StringVar(value="Measurements")
+        self.fitting_catalog_item_no_var = tk.StringVar()
         self.fitting_notes_var = tk.StringVar()
         self.selected_fitting_cadet_id: int | None = None
         self.selected_fitting_size_entry_id: int | None = None
         self.fitting_size_cache: dict[int, dict[str, Any]] = {}
+        self.fitting_catalog_cache: dict[str, dict[str, Any]] = {}
 
         self.settings_org_name_var = tk.StringVar()
         self.settings_db_path_var = tk.StringVar()
@@ -1443,14 +1449,14 @@ class InventoryApp(tk.Tk):
         )
         ttk.Label(
             self.cadet_fitting_tab,
-            text="Select a saved cadet and catalog any uniform size or fitting measurement needed for issue appointments.",
+            text="Select a cadet, browse equipment by category, then choose a known size or enter a manual measurement.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
         content = ttk.Frame(self.cadet_fitting_tab)
         content.grid(row=2, column=0, sticky="nsew")
         content.columnconfigure(0, weight=1)
-        content.columnconfigure(1, weight=2)
+        content.columnconfigure(1, weight=3)
         content.rowconfigure(0, weight=1)
 
         cadet_frame = ttk.LabelFrame(content, text="Saved Cadets", padding=10)
@@ -1475,10 +1481,11 @@ class InventoryApp(tk.Tk):
         self.fitting_cadet_tree.grid(row=0, column=0, sticky="nsew")
         self.fitting_cadet_tree.bind("<<TreeviewSelect>>", self._on_fitting_cadet_selected)
 
-        sizes_frame = ttk.LabelFrame(content, text="Selected Cadet Size Profile", padding=10)
+        sizes_frame = ttk.LabelFrame(content, text="Selected Cadet Fitting Profile", padding=10)
         sizes_frame.grid(row=0, column=1, sticky="nsew")
         sizes_frame.columnconfigure(0, weight=1)
-        sizes_frame.rowconfigure(2, weight=1)
+        sizes_frame.rowconfigure(1, weight=1)
+        sizes_frame.rowconfigure(5, weight=1)
         ttk.Label(
             sizes_frame,
             textvariable=self.fitting_summary_var,
@@ -1486,27 +1493,103 @@ class InventoryApp(tk.Tk):
             justify="left",
         ).grid(row=0, column=0, sticky="w", pady=(0, 10))
 
-        editor = ttk.Frame(sizes_frame)
-        editor.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        catalog_frame = ttk.LabelFrame(sizes_frame, text="1. Find an Equipment Size", padding=8)
+        catalog_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        catalog_frame.columnconfigure(3, weight=1)
+        catalog_frame.rowconfigure(1, weight=1)
+        ttk.Label(catalog_frame, text="Category").grid(row=0, column=0, sticky="w")
+        self.fitting_category_combo = ttk.Combobox(
+            catalog_frame,
+            textvariable=self.fitting_catalog_category_var,
+            state="readonly",
+            values=["All"],
+            width=21,
+        )
+        self.fitting_category_combo.grid(row=0, column=1, sticky="w", padx=(6, 12))
+        self.fitting_category_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self.refresh_fitting_catalog()
+        )
+        ttk.Label(catalog_frame, text="Search item, size, sex, or item #").grid(
+            row=0, column=2, sticky="w"
+        )
+        fitting_catalog_search_entry = ttk.Entry(
+            catalog_frame,
+            textvariable=self.fitting_catalog_search_var,
+        )
+        fitting_catalog_search_entry.grid(row=0, column=3, sticky="ew", padx=(6, 8))
+        fitting_catalog_search_entry.bind(
+            "<KeyRelease>", lambda _event: self.refresh_fitting_catalog()
+        )
+        ttk.Button(
+            catalog_frame,
+            text="Clear Search",
+            command=self._clear_fitting_catalog_search,
+        ).grid(row=0, column=4)
+
+        fitting_catalog_tree_frame = ttk.Frame(catalog_frame)
+        fitting_catalog_tree_frame.grid(
+            row=1, column=0, columnspan=5, sticky="nsew", pady=(8, 0)
+        )
+        fitting_catalog_tree_frame.columnconfigure(0, weight=1)
+        fitting_catalog_tree_frame.rowconfigure(0, weight=1)
+        self.fitting_catalog_tree = self._create_tree(
+            fitting_catalog_tree_frame,
+            columns=[
+                "category",
+                "subcategory",
+                "item_name",
+                "sex",
+                "size",
+                "item_no",
+                "available_quantity",
+                "total_quantity",
+            ],
+        )
+        self.fitting_catalog_tree.configure(height=7)
+        self.fitting_catalog_tree.grid(row=0, column=0, sticky="nsew")
+        self.fitting_catalog_tree.bind(
+            "<<TreeviewSelect>>", self._on_fitting_catalog_option_selected
+        )
+        self.fitting_catalog_tree.bind(
+            "<Double-1>", self._on_fitting_catalog_option_selected
+        )
+        ttk.Label(
+            catalog_frame,
+            textvariable=self.fitting_catalog_summary_var,
+            wraplength=850,
+        ).grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 0))
+
+        editor = ttk.LabelFrame(sizes_frame, text="2. Save Size or Measurement", padding=8)
+        editor.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         editor.columnconfigure(1, weight=2)
         editor.columnconfigure(3, weight=1)
         editor.columnconfigure(5, weight=2)
         ttk.Label(editor, text="Item / Measurement").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(
+        fitting_label_combo = ttk.Combobox(
             editor,
             textvariable=self.fitting_size_label_var,
             values=list(CADET_FITTING_SIZE_LABELS),
             width=28,
-        ).grid(row=0, column=1, sticky="ew", padx=(6, 10))
+        )
+        fitting_label_combo.grid(row=0, column=1, sticky="ew", padx=(6, 10))
+        fitting_label_combo.bind(
+            "<<ComboboxSelected>>", self._mark_fitting_entry_as_manual
+        )
+        fitting_label_combo.bind("<KeyRelease>", self._mark_fitting_entry_as_manual)
         ttk.Label(editor, text="Size / Value").grid(row=0, column=2, sticky="w")
-        ttk.Entry(editor, textvariable=self.fitting_size_value_var, width=18).grid(
+        self.fitting_size_value_combo = ttk.Combobox(
+            editor,
+            textvariable=self.fitting_size_value_var,
+            width=18,
+        )
+        self.fitting_size_value_combo.grid(
             row=0, column=3, sticky="ew", padx=(6, 10)
         )
         ttk.Label(editor, text="Notes").grid(row=0, column=4, sticky="w")
         ttk.Entry(editor, textvariable=self.fitting_notes_var).grid(
             row=0, column=5, sticky="ew", padx=(6, 10)
         )
-        ttk.Button(editor, text="Save Size", command=self._save_fitting_size).grid(
+        ttk.Button(editor, text="Save to Cadet", command=self._save_fitting_size).grid(
             row=0, column=6, padx=(0, 6)
         )
         ttk.Button(editor, text="Delete Size", command=self._delete_fitting_size).grid(
@@ -1514,13 +1597,30 @@ class InventoryApp(tk.Tk):
         )
         ttk.Button(editor, text="Clear", command=self._clear_fitting_size_form).grid(row=0, column=8)
 
+        ttk.Label(sizes_frame, text="3. Saved Fitting Profile").grid(
+            row=3, column=0, sticky="w", pady=(0, 4)
+        )
+        ttk.Label(
+            sizes_frame,
+            text="Select a saved row to edit it. Manual entries such as height and weight are supported.",
+            style="Subtitle.TLabel",
+        ).grid(row=4, column=0, sticky="w", pady=(0, 6))
+
         fitting_size_tree_frame = ttk.Frame(sizes_frame)
-        fitting_size_tree_frame.grid(row=2, column=0, sticky="nsew")
+        fitting_size_tree_frame.grid(row=5, column=0, sticky="nsew")
         fitting_size_tree_frame.columnconfigure(0, weight=1)
         fitting_size_tree_frame.rowconfigure(0, weight=1)
         self.fitting_size_tree = self._create_tree(
             fitting_size_tree_frame,
-            columns=["size_entry_id", "size_label", "size_value", "notes", "updated_at"],
+            columns=[
+                "size_entry_id",
+                "category",
+                "size_label",
+                "size_value",
+                "catalog_item_no",
+                "notes",
+                "updated_at",
+            ],
         )
         self.fitting_size_tree.grid(row=0, column=0, sticky="nsew")
         self.fitting_size_tree.bind("<<TreeviewSelect>>", self._on_fitting_size_selected)
@@ -2335,6 +2435,12 @@ class InventoryApp(tk.Tk):
             )
 
     def refresh_cadet_fitting_index(self) -> None:
+        categories = ["All", *self.service.list_cadet_fitting_categories()]
+        self.fitting_category_combo.configure(values=categories)
+        if self.fitting_catalog_category_var.get() not in categories:
+            self.fitting_catalog_category_var.set("All")
+        self.refresh_fitting_catalog()
+
         rows = self.service.list_cadets(search=self.fitting_search_var.get())
         rows = sorted(
             rows,
@@ -2361,10 +2467,93 @@ class InventoryApp(tk.Tk):
             self.fitting_summary_var.set("Select a cadet to catalog fitting sizes.")
             self._populate_tree(
                 self.fitting_size_tree,
-                ["size_entry_id", "size_label", "size_value", "notes", "updated_at"],
+                [
+                    "size_entry_id",
+                    "category",
+                    "size_label",
+                    "size_value",
+                    "catalog_item_no",
+                    "notes",
+                    "updated_at",
+                ],
                 [],
             )
             self._clear_fitting_size_form()
+
+    def refresh_fitting_catalog(self) -> None:
+        rows = self.service.list_cadet_fitting_options(
+            category=self.fitting_catalog_category_var.get(),
+            search=self.fitting_catalog_search_var.get(),
+        )
+        self.fitting_catalog_cache = {str(row["item_no"]): row for row in rows}
+        self._populate_tree(
+            self.fitting_catalog_tree,
+            [
+                "category",
+                "subcategory",
+                "item_name",
+                "sex",
+                "size",
+                "item_no",
+                "available_quantity",
+                "total_quantity",
+            ],
+            rows,
+        )
+        stocked_sizes = sum(1 for row in rows if int(row["total_quantity"]) > 0)
+        available_units = sum(int(row["available_quantity"]) for row in rows)
+        self.fitting_catalog_summary_var.set(
+            f"{len(rows)} known size option(s) | {stocked_sizes} stocked size(s) | "
+            f"{available_units} unit(s) currently available. Select a row to fill the cadet form."
+        )
+
+    def _clear_fitting_catalog_search(self) -> None:
+        self.fitting_catalog_category_var.set("All")
+        self.fitting_catalog_search_var.set("")
+        self.refresh_fitting_catalog()
+
+    def _on_fitting_catalog_option_selected(self, _event: tk.Event | None = None) -> None:
+        selected = self._selected_tree_row(self.fitting_catalog_tree)
+        if not selected:
+            return
+        row = self.fitting_catalog_cache.get(str(selected.get("item_no") or ""))
+        if row is None:
+            return
+        self.selected_fitting_size_entry_id = None
+        self.fitting_size_label_var.set(str(row["fitting_label"] or row["item_name"]))
+        self.fitting_size_value_var.set(str(row["size"] or ""))
+        self.fitting_entry_category_var.set(str(row["category"] or ""))
+        self.fitting_catalog_item_no_var.set(str(row["item_no_key"] or ""))
+        self.fitting_notes_var.set("")
+        related_sizes = sorted(
+            {
+                str(option["size"] or "")
+                for option in self.fitting_catalog_cache.values()
+                if str(option["category"]).casefold() == str(row["category"]).casefold()
+                and str(option["fitting_label"]).casefold()
+                == str(row["fitting_label"]).casefold()
+                and str(option["size"] or "").strip()
+            },
+            key=str.casefold,
+        )
+        self.fitting_size_value_combo.configure(values=related_sizes)
+        self.fitting_catalog_summary_var.set(
+            f"Selected {row['fitting_label']} | size {row['size'] or 'not specified'} | "
+            f"item {row['item_no']} | {row['available_quantity']} of "
+            f"{row['total_quantity']} currently available."
+        )
+
+    def _mark_fitting_entry_as_manual(self, _event: tk.Event | None = None) -> None:
+        self.fitting_catalog_item_no_var.set("")
+        label = self.fitting_size_label_var.get().strip().casefold()
+        if label in {"height", "weight"}:
+            self.fitting_entry_category_var.set("Measurements")
+        else:
+            selected_category = self.fitting_catalog_category_var.get().strip()
+            self.fitting_entry_category_var.set(
+                selected_category if selected_category and selected_category != "All" else "Other"
+            )
+        self.fitting_size_value_combo.configure(values=[])
 
     def _load_fitting_cadet(self, cadet_id: int) -> None:
         details = self.service.get_cadet_details(cadet_id)
@@ -2377,7 +2566,15 @@ class InventoryApp(tk.Tk):
         )
         self._populate_tree(
             self.fitting_size_tree,
-            ["size_entry_id", "size_label", "size_value", "notes", "updated_at"],
+            [
+                "size_entry_id",
+                "category",
+                "size_label",
+                "size_value",
+                "catalog_item_no",
+                "notes",
+                "updated_at",
+            ],
             rows,
         )
 
@@ -2407,6 +2604,8 @@ class InventoryApp(tk.Tk):
         self.selected_fitting_size_entry_id = size_entry_id
         self.fitting_size_label_var.set(str(row.get("size_label") or ""))
         self.fitting_size_value_var.set(str(row.get("size_value") or ""))
+        self.fitting_entry_category_var.set(str(row.get("category") or "Other"))
+        self.fitting_catalog_item_no_var.set(str(row.get("catalog_item_no") or ""))
         self.fitting_notes_var.set(str(row.get("notes") or ""))
 
     def _save_fitting_size(self) -> None:
@@ -2424,6 +2623,8 @@ class InventoryApp(tk.Tk):
                 size_entry_id=self.selected_fitting_size_entry_id,
                 size_label=self.fitting_size_label_var.get(),
                 size_value=self.fitting_size_value_var.get(),
+                category=self.fitting_entry_category_var.get(),
+                catalog_item_no=self.fitting_catalog_item_no_var.get(),
                 notes=self.fitting_notes_var.get(),
             ),
             success_message="Cadet fitting size saved.",
@@ -2459,6 +2660,9 @@ class InventoryApp(tk.Tk):
         self.selected_fitting_size_entry_id = None
         self.fitting_size_label_var.set("")
         self.fitting_size_value_var.set("")
+        self.fitting_entry_category_var.set("Measurements")
+        self.fitting_catalog_item_no_var.set("")
+        self.fitting_size_value_combo.configure(values=[])
         self.fitting_notes_var.set("")
 
     def refresh_return_cadets(self) -> None:
@@ -5255,14 +5459,21 @@ A.C.E. Manual
 - Delete Cadet removes the saved cadet record while preserving all checkout history snapshots.
 - Load Into Checkout copies that cadet into the checkout screen.
 
-10. Reports
+10. Cadet Fitting Index
+- Select a saved cadet, then filter the equipment catalog by category or search by item name, size, sex, or WINGS/local item number.
+- The catalog shows every known size and the current total and available quantities. A zero-stock size can still be recorded for planning.
+- Select an equipment row to fill its official description, size, category, and item number into the cadet profile form.
+- Use Item / Measurement for free-form entries such as height, weight, or an item that is not in the catalog.
+- Saved fitting entries can be selected, changed, or deleted without affecting inventory quantities.
+
+11. Reports
 - Checked Out Items shows open issues.
 - Acquired / Purchased Items shows every permanent issue or purchase with the cadet, item, date, approver, and notes.
 - Transaction History shows all checkout, return, permanent-issue, and purchase records.
 - Export CSV saves the current report.
 - Export WINGS Spreadsheet creates the same official-stock-only workbook as the WINGS Export tab.
 
-11. Settings
+12. Settings
 - Set the portable SQLite database location.
 - Set or change the protected backup folder.
 - Configure backup frequency. Backups are compressed ZIP files.
@@ -5274,13 +5485,13 @@ A.C.E. Manual
 - Credits opens the project credit screen.
 - In Credits, click @pixelatedclub to toggle alternate icon mode. Rare icons use 1-in-4 odds in alternate mode and 1-in-4,000 odds normally.
 
-12. Printing Labels
+13. Printing Labels
 - PDFs are stored in the labels folder next to the database.
 - The PDF layout uses the Premium Label Supply PLS892 template: 2" x 1" labels on letter paper, 40 labels per sheet.
 - Print at Actual Size or 100% scale with Fit To Page disabled for best barcode accuracy.
 - The scanner acceptance PDF fills one complete PLS892 sheet so all four columns and ten rows can be checked.
 
-12. Data Notes
+14. Data Notes
 - Identical items can share one barcode by increasing quantity.
 - New generated barcodes use the lowest currently unused A-number.
 - The system blocks negative inventory.
