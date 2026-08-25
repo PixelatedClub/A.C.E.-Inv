@@ -419,6 +419,7 @@ class InventoryService:
                         (keeper_barcode, old_barcode),
                     ).rowcount
                     relinked_transactions += max(changed, 0)
+                    connection.execute("DELETE FROM items WHERE barcode_id = ?", (old_barcode,))
                     connection.execute(
                         """
                         INSERT INTO barcode_aliases(alias_barcode_id, canonical_barcode_id, created_at, reason)
@@ -430,7 +431,6 @@ class InventoryService:
                         """,
                         (old_barcode, keeper_barcode, utc_now()),
                     )
-                    connection.execute("DELETE FROM items WHERE barcode_id = ?", (old_barcode,))
                     merged_rows += 1
 
                 connection.execute(
@@ -1861,6 +1861,27 @@ class InventoryService:
         )
 
         with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            matching_item = self._find_matching_item(
+                connection,
+                category=str(preview["category"]),
+                variant=str(preview["variant"]),
+                item_type=str(preview["item_type"]),
+                item_name=str(preview["item_name"]),
+                wings_item_no=str(preview.get("wings_item_no") or wings_item_no).strip(),
+            )
+            if matching_item is not None:
+                preview = dict(matching_item)
+                preview["action"] = "restock"
+            else:
+                preview["action"] = "create"
+                preview["barcode_id"] = self._next_barcode_for_prefix(
+                    connection,
+                    category=str(preview["category"]),
+                    variant=str(preview["variant"]),
+                    item_type=str(preview["item_type"]),
+                )
+
             if preview["action"] == "restock":
                 item = connection.execute(
                     "SELECT * FROM items WHERE barcode_id = ?",
@@ -2055,6 +2076,31 @@ class InventoryService:
             if existing is None:
                 raise InventoryError("That barcode no longer exists.")
 
+            existing_item_no = str(existing["wings_item_no"] or "").strip()
+            duplicate = self._find_matching_item(
+                connection,
+                category=category,
+                variant=variant,
+                item_type=item_type,
+                item_name=item_name,
+                wings_item_no=existing_item_no,
+                exclude_barcode=barcode,
+            )
+            if duplicate is None and existing_item_no and not existing_item_no.isdigit():
+                duplicate = self._find_matching_item(
+                    connection,
+                    category=category,
+                    variant=variant,
+                    item_type=item_type,
+                    item_name=item_name,
+                    exclude_barcode=barcode,
+                )
+            if duplicate is not None:
+                raise InventoryError(
+                    f"Those item details already use barcode {duplicate['barcode_id']}. "
+                    "Restock that barcode instead of creating duplicate item definitions."
+                )
+
             checked_out = self._open_checkout_count(connection, barcode)
             if quantity < checked_out:
                 raise InventoryError(
@@ -2111,12 +2157,36 @@ class InventoryService:
         item_name = self._clean_item_name(item_name) or self._suggest_item_name(category, variant, item_type)
 
         with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             exists = connection.execute(
                 "SELECT 1 FROM items WHERE barcode_id = ?",
                 (barcode,),
             ).fetchone()
             if exists:
                 raise InventoryError("That barcode already exists. Restock it instead of creating a duplicate.")
+
+            reserved_alias = connection.execute(
+                "SELECT canonical_barcode_id FROM barcode_aliases WHERE alias_barcode_id = ? COLLATE NOCASE",
+                (barcode,),
+            ).fetchone()
+            if reserved_alias is not None:
+                raise InventoryError(
+                    f"Barcode {barcode} is reserved as an alias for {reserved_alias['canonical_barcode_id']}. "
+                    "Use a different barcode."
+                )
+
+            duplicate = self._find_matching_item(
+                connection,
+                category=category,
+                variant=variant,
+                item_type=item_type,
+                item_name=item_name,
+            )
+            if duplicate is not None:
+                raise InventoryError(
+                    f"An identical item already uses barcode {duplicate['barcode_id']}. "
+                    "Restock that barcode instead of creating another one."
+                )
 
             now = utc_now()
             local_item_no = self._ensure_local_inventory_catalog_entry(
@@ -4736,6 +4806,12 @@ class InventoryService:
         seen: set[str] = set()
         while resolved and resolved not in seen:
             seen.add(resolved)
+            active_item = connection.execute(
+                "SELECT 1 FROM items WHERE barcode_id = ? COLLATE NOCASE",
+                (resolved,),
+            ).fetchone()
+            if active_item is not None:
+                break
             row = connection.execute(
                 "SELECT canonical_barcode_id FROM barcode_aliases WHERE alias_barcode_id = ?",
                 (resolved,),
@@ -4879,28 +4955,45 @@ class InventoryService:
         item_type: str,
         item_name: str,
         wings_item_no: str = "",
+        exclude_barcode: str = "",
     ) -> sqlite3.Row | None:
+        excluded = str(exclude_barcode or "").strip().upper()
+        exclusion_sql = " AND barcode_id <> ? COLLATE NOCASE" if excluded else ""
+        excluded_params: tuple[str, ...] = (excluded,) if excluded else ()
         if wings_item_no:
-            return connection.execute(
+            wings_match = connection.execute(
                 f"""
                 SELECT * FROM items
-                WHERE wings_item_no = ?
+                WHERE lower(trim(COALESCE(wings_item_no, ''))) = lower(trim(?))
+                  {exclusion_sql}
                   AND barcode_id NOT IN ({", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)})
-                ORDER BY created_at
+                ORDER BY created_at, barcode_id
                 LIMIT 1
                 """,
-                (wings_item_no, *EASTER_EGG_BARCODE_IDS),
+                (wings_item_no, *excluded_params, *EASTER_EGG_BARCODE_IDS),
             ).fetchone()
+            return wings_match
         exact_match = connection.execute(
             f"""
             SELECT *
             FROM items
-            WHERE category = ? AND variant = ? AND lower(item_name) = lower(?)
+            WHERE lower(trim(category)) = lower(trim(?))
+              AND lower(trim(variant)) = lower(trim(?))
+              AND lower(trim(item_type)) = lower(trim(?))
+              AND lower(trim(item_name)) = lower(trim(?))
+              {exclusion_sql}
               AND barcode_id NOT IN ({", ".join("?" for _ in EASTER_EGG_BARCODE_IDS)})
-            ORDER BY created_at
+            ORDER BY created_at, barcode_id
             LIMIT 1
             """,
-            (category, variant, item_name, *EASTER_EGG_BARCODE_IDS),
+            (
+                category,
+                variant,
+                item_type,
+                item_name,
+                *excluded_params,
+                *EASTER_EGG_BARCODE_IDS,
+            ),
         ).fetchone()
         if exact_match is not None:
             return exact_match
@@ -4916,8 +5009,13 @@ class InventoryService:
     ) -> str:
         rows = connection.execute(
             """
+            WITH reserved_barcodes AS (
+                SELECT barcode_id FROM items
+                UNION
+                SELECT alias_barcode_id AS barcode_id FROM barcode_aliases
+            )
             SELECT barcode_id
-            FROM items
+            FROM reserved_barcodes
             WHERE barcode_id GLOB 'A[0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
             ORDER BY barcode_id
             """

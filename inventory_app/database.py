@@ -191,6 +191,54 @@ CREATE INDEX IF NOT EXISTS idx_custom_index_system ON custom_index_items(uniform
 CREATE INDEX IF NOT EXISTS idx_inventory_changes_event_time ON inventory_changes(event_time);
 CREATE INDEX IF NOT EXISTS idx_inventory_changes_barcode ON inventory_changes(barcode_id);
 
+CREATE TRIGGER IF NOT EXISTS trg_items_reject_identical_insert
+BEFORE INSERT ON items
+WHEN EXISTS (
+    SELECT 1
+    FROM items existing
+    WHERE lower(trim(COALESCE(existing.wings_item_no, ''))) = lower(trim(COALESCE(NEW.wings_item_no, '')))
+      AND lower(trim(existing.item_name)) = lower(trim(NEW.item_name))
+      AND lower(trim(existing.category)) = lower(trim(NEW.category))
+      AND lower(trim(existing.variant)) = lower(trim(NEW.variant))
+      AND lower(trim(existing.item_type)) = lower(trim(NEW.item_type))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'An identical inventory item already has a barcode.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_items_reject_reserved_alias_insert
+BEFORE INSERT ON items
+WHEN EXISTS (
+    SELECT 1
+    FROM barcode_aliases aliases
+    WHERE aliases.alias_barcode_id = NEW.barcode_id COLLATE NOCASE
+)
+BEGIN
+    SELECT RAISE(ABORT, 'That barcode is reserved by an existing barcode alias.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_aliases_reject_active_item_insert
+BEFORE INSERT ON barcode_aliases
+WHEN EXISTS (
+    SELECT 1
+    FROM items
+    WHERE items.barcode_id = NEW.alias_barcode_id COLLATE NOCASE
+)
+BEGIN
+    SELECT RAISE(ABORT, 'An active inventory barcode cannot also be a barcode alias.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_aliases_reject_active_item_update
+BEFORE UPDATE OF alias_barcode_id ON barcode_aliases
+WHEN EXISTS (
+    SELECT 1
+    FROM items
+    WHERE items.barcode_id = NEW.alias_barcode_id COLLATE NOCASE
+)
+BEGIN
+    SELECT RAISE(ABORT, 'An active inventory barcode cannot also be a barcode alias.');
+END;
+
 CREATE TRIGGER IF NOT EXISTS trg_items_inventory_change_insert
 AFTER INSERT ON items
 BEGIN
@@ -370,6 +418,12 @@ class InventoryDatabase:
         if "disposition" not in transaction_columns:
             connection.execute("ALTER TABLE transactions ADD COLUMN disposition TEXT NOT NULL DEFAULT ''")
 
+        self._merge_duplicate_cadets(connection)
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_cadets_normalized_email "
+            "ON cadets(lower(trim(email)))"
+        )
+
         connection.execute(
             """
             UPDATE transactions
@@ -421,6 +475,99 @@ class InventoryDatabase:
             connection.execute(
                 "DELETE FROM catalog_values WHERE kind = 'item_name' AND lower(value) = lower(?)",
                 (legacy_name,),
+            )
+
+    @staticmethod
+    def _merge_duplicate_cadets(connection: sqlite3.Connection) -> None:
+        """Merge legacy cadet rows that differ only by email case or whitespace."""
+        duplicate_emails = connection.execute(
+            """
+            SELECT lower(trim(email)) AS normalized_email
+            FROM cadets
+            GROUP BY lower(trim(email))
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        for duplicate_group in duplicate_emails:
+            normalized_email = str(duplicate_group["normalized_email"] or "")
+            rows = connection.execute(
+                """
+                SELECT cadet_id, full_name, email, created_at, updated_at
+                FROM cadets
+                WHERE lower(trim(email)) = ?
+                ORDER BY cadet_id
+                """,
+                (normalized_email,),
+            ).fetchall()
+            if len(rows) < 2:
+                continue
+
+            keeper = rows[0]
+            keeper_id = int(keeper["cadet_id"])
+            keeper_name = str(keeper["full_name"])
+            keeper_email = normalized_email
+            for duplicate in rows[1:]:
+                duplicate_id = int(duplicate["cadet_id"])
+                size_entries = connection.execute(
+                    """
+                    SELECT *
+                    FROM cadet_size_entries
+                    WHERE cadet_id = ?
+                    ORDER BY size_entry_id
+                    """,
+                    (duplicate_id,),
+                ).fetchall()
+                for entry in size_entries:
+                    existing_entry = connection.execute(
+                        """
+                        SELECT *
+                        FROM cadet_size_entries
+                        WHERE cadet_id = ? AND size_label = ? COLLATE NOCASE
+                        """,
+                        (keeper_id, entry["size_label"]),
+                    ).fetchone()
+                    if existing_entry is None:
+                        connection.execute(
+                            "UPDATE cadet_size_entries SET cadet_id = ? WHERE size_entry_id = ?",
+                            (keeper_id, entry["size_entry_id"]),
+                        )
+                    else:
+                        if str(entry["updated_at"] or "") > str(existing_entry["updated_at"] or ""):
+                            connection.execute(
+                                """
+                                UPDATE cadet_size_entries
+                                SET size_value = ?, category = ?, catalog_item_no = ?, notes = ?,
+                                    updated_at = ?
+                                WHERE size_entry_id = ?
+                                """,
+                                (
+                                    entry["size_value"],
+                                    entry["category"],
+                                    entry["catalog_item_no"],
+                                    entry["notes"],
+                                    entry["updated_at"],
+                                    existing_entry["size_entry_id"],
+                                ),
+                            )
+                        connection.execute(
+                            "DELETE FROM cadet_size_entries WHERE size_entry_id = ?",
+                            (entry["size_entry_id"],),
+                        )
+
+                connection.execute(
+                    """
+                    UPDATE transactions
+                    SET cadet_id = ?, cadet_name = ?, cadet_email = ?
+                    WHERE cadet_id = ?
+                       OR (cadet_id IS NULL AND lower(trim(cadet_email)) = ?)
+                    """,
+                    (keeper_id, keeper_name, keeper_email, duplicate_id, normalized_email),
+                )
+                connection.execute("DELETE FROM cadets WHERE cadet_id = ?", (duplicate_id,))
+
+            connection.execute(
+                "UPDATE cadets SET email = ?, updated_at = ? WHERE cadet_id = ?",
+                (keeper_email, utc_now(), keeper_id),
             )
 
     def _seed_catalog(self, connection: sqlite3.Connection) -> None:
