@@ -1293,7 +1293,7 @@ class InventoryApp(tk.Tk):
         self.cadets_tab.columnconfigure(1, weight=2)
         self.cadets_tab.rowconfigure(1, weight=1)
 
-        form_frame = ttk.LabelFrame(self.cadets_tab, text="Save / Update Cadet", padding=12)
+        form_frame = ttk.LabelFrame(self.cadets_tab, text="Cadet Record", padding=12)
         form_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         form_frame.columnconfigure(1, weight=1)
 
@@ -1315,11 +1315,14 @@ class InventoryApp(tk.Tk):
         form_frame.columnconfigure(1, weight=2)
         form_frame.columnconfigure(3, weight=1)
 
-        ttk.Button(form_frame, text="Save / Update Cadet", command=self._save_cadet).grid(row=0, column=4, padx=(0, 6))
-        ttk.Button(form_frame, text="Load Into Checkout", command=self._load_selected_cadet_into_checkout).grid(row=0, column=5, padx=(0, 6))
-        ttk.Button(form_frame, text="Delete Cadet", command=self._delete_selected_cadet).grid(row=0, column=6, padx=(0, 6))
-        ttk.Button(form_frame, text="Export Cadet History", command=self._export_selected_cadet_history).grid(row=0, column=7, padx=(0, 6))
-        ttk.Button(form_frame, text="Clear Cadet Form", command=self._clear_cadet_form).grid(row=0, column=8)
+        cadet_actions = ttk.Frame(form_frame)
+        cadet_actions.grid(row=1, column=0, columnspan=10, sticky="e", pady=(8, 0))
+        ttk.Button(cadet_actions, text="Start New Cadet", command=self._clear_cadet_form).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(cadet_actions, text="Save New Cadet", command=self._save_cadet).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(cadet_actions, text="Update Selected", command=self._update_selected_cadet).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(cadet_actions, text="Load Into Checkout", command=self._load_selected_cadet_into_checkout).grid(row=0, column=3, padx=(0, 6))
+        ttk.Button(cadet_actions, text="Export Cadet History", command=self._export_selected_cadet_history).grid(row=0, column=4, padx=(0, 6))
+        ttk.Button(cadet_actions, text="Delete Cadet", command=self._delete_selected_cadet).grid(row=0, column=5)
 
         left_frame = ttk.LabelFrame(self.cadets_tab, text="Saved Cadets", padding=10)
         left_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
@@ -3665,22 +3668,49 @@ class InventoryApp(tk.Tk):
             self.refresh_cadet_fitting_index()
             self._load_cadet_details(self.selected_cadet_id)
 
-        is_update = self.selected_cadet_id is not None
-        action = (
-            lambda: self.service.update_cadet(
-                cadet_id=int(self.selected_cadet_id or 0),
-                cadet_name=self._compose_cadet_form_name(),
-                cadet_email=self.cadet_form_email_var.get(),
-            )
-            if is_update
-            else self.service.save_cadet(
-                cadet_name=self._compose_cadet_form_name(),
-                cadet_email=self.cadet_form_email_var.get(),
-            )
-        )
         self._run_action(
-            action,
-            success_message="Cadet record updated." if is_update else "Cadet record saved.",
+            lambda: self.service.save_cadet(
+                cadet_name=self._compose_cadet_form_name(),
+                cadet_email=self.cadet_form_email_var.get(),
+            ),
+            success_message="New cadet saved.",
+            on_success=on_success,
+        )
+
+    def _update_selected_cadet(self) -> None:
+        if self.selected_cadet_id is None:
+            self._show_error("Select a saved cadet before updating a record.")
+            return
+
+        cadet_id = int(self.selected_cadet_id)
+        current = self.cadet_cache.get(cadet_id, {})
+        current_name = str(current.get("full_name") or "Unknown")
+        current_email = str(current.get("email") or "Unknown")
+        new_name = self._compose_cadet_form_name()
+        new_email = self.cadet_form_email_var.get().strip()
+        if not messagebox.askyesno(
+            "Update Selected Cadet",
+            f"Update cadet ID {cadet_id}?\n\n"
+            f"Current: {current_name} | {current_email}\n"
+            f"New: {new_name} | {new_email}\n\n"
+            "Checkout history and fitting sizes will remain attached to this cadet ID.",
+            parent=self,
+        ):
+            return
+
+        def on_success(cadet: dict[str, Any]) -> None:
+            self.selected_cadet_id = int(cadet["cadet_id"])
+            self.refresh_cadets()
+            self.refresh_cadet_fitting_index()
+            self._load_cadet_details(self.selected_cadet_id)
+
+        self._run_action(
+            lambda: self.service.update_cadet(
+                cadet_id=cadet_id,
+                cadet_name=new_name,
+                cadet_email=new_email,
+            ),
+            success_message="Selected cadet updated.",
             on_success=on_success,
         )
 
@@ -3700,7 +3730,7 @@ class InventoryApp(tk.Tk):
         self.cadet_middle_initial_var.set("")
         self.cadet_first_name_var.set("")
         self.cadet_form_email_var.set("")
-        self.cadet_summary_var.set("Select or save a cadet to view issued items.")
+        self.cadet_summary_var.set("Enter the new cadet's details, then choose Save New Cadet.")
         self._populate_tree(
             self.cadet_current_tree,
             [
