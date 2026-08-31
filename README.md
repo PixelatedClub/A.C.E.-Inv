@@ -74,23 +74,11 @@ The included `Launch A.C.E.cmd` starts the executable when one is present, or fa
 
 A.C.E. has no third-party runtime dependencies. Image dimensions, GIF timing, ICO packaging, barcodes, PDFs, and Excel files are handled by local project code plus Python's standard library. PyInstaller is used only while producing the standalone Windows executable; end users do not need it.
 
-## Windows publisher and signed releases
+## Windows publisher and releases
 
-Windows file properties identify **Team Shapes** as the product company. A trusted Windows "Verified publisher" name comes from the Authenticode certificate, not editable file metadata. The signed-release workflow refuses to publish unless Azure Artifact Signing supplies a valid identity-verified signature and the final signature passes verification.
+Windows file properties identify **Team Shapes** as the product company. Current releases are intentionally unsigned, so Team Shapes is an unverified product brand rather than a Windows "Verified publisher." Windows may display **Unknown publisher** or a Microsoft Defender SmartScreen warning when a newly downloaded executable is opened.
 
-Configure the `release-signing` GitHub environment with these OIDC secrets:
-
-- `AZURE_CLIENT_ID`
-- `AZURE_TENANT_ID`
-- `AZURE_SUBSCRIPTION_ID`
-
-Configure these environment variables after the Artifact Signing account and certificate profile are approved:
-
-- `AZURE_ARTIFACT_SIGNING_ENDPOINT`
-- `AZURE_ARTIFACT_SIGNING_ACCOUNT`
-- `AZURE_ARTIFACT_SIGNING_PROFILE`
-
-The certificate identity may be an individual legal name until Team Shapes becomes a validated organization or DBA. Team Shapes remains the visible product brand either way.
+The release workflow runs the complete automated test suite, builds the standalone executable, verifies its Team Shapes metadata and version, and publishes `A.C.E.zip` with SHA-256 checksums. A self-signed certificate is not used because Windows does not publicly trust self-signed publishers.
 
 ## Data and privacy
 

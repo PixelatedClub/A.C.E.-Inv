@@ -1,4 +1,4 @@
-name: Signed Windows release
+name: Windows release (unverified publisher)
 
 on:
   workflow_dispatch:
@@ -10,13 +10,11 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
-  build-sign-release:
-    name: Build, sign, and publish A.C.E.
+  build-test-release:
+    name: Build, test, and publish A.C.E.
     runs-on: windows-2025
-    environment: release-signing
 
     steps:
       - name: Check out source
@@ -40,42 +38,29 @@ jobs:
         shell: pwsh
         run: .\tools\build_windows_release.ps1 -PythonPath python
 
-      - name: Sign in to Azure using OIDC
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Authenticode-sign A.C.E.
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\release\A.C.E.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-          description: A.C.E. Inventory System by Team Shapes
-          description-url: https://github.com/PixelatedClub/A.C.E.-Inv
-
-      - name: Verify publisher signature and metadata
+      - name: Verify Team Shapes metadata and release version
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           $exe = Join-Path $env:GITHUB_WORKSPACE "release\A.C.E.exe"
-          $signature = Get-AuthenticodeSignature -LiteralPath $exe
-          if ($signature.Status -ne "Valid" -or -not $signature.SignerCertificate) {
-              throw "A.C.E.exe does not have a valid trusted signature. Status: $($signature.Status)"
-          }
           $info = (Get-Item -LiteralPath $exe).VersionInfo
+          $expectedVersion = $env:RELEASE_TAG -replace '^v', ''
           if ($info.CompanyName -ne "Team Shapes") {
               throw "Unexpected CompanyName metadata: $($info.CompanyName)"
           }
-          Write-Host "Verified signer: $($signature.SignerCertificate.Subject)"
+          if ($info.ProductVersion -ne $expectedVersion) {
+              throw "Executable version $($info.ProductVersion) does not match release tag $env:RELEASE_TAG."
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($signature.Status -ne "NotSigned") {
+              throw "Expected an unsigned release, but signature status is $($signature.Status)."
+          }
           Write-Host "Company metadata: $($info.CompanyName)"
+          Write-Host "Product version: $($info.ProductVersion)"
+          Write-Host "Publisher verification: unverified (unsigned)"
 
-      - name: Package signed release and checksums
+      - name: Package release and checksums
         shell: pwsh
         run: |
           $release = Join-Path $env:GITHUB_WORKSPACE "release"
@@ -88,6 +73,13 @@ jobs:
               "$zipHash  A.C.E.zip"
               "$exeHash  A.C.E.exe (inside ZIP)"
           ) | Set-Content -LiteralPath (Join-Path $release "SHA256SUMS.txt") -Encoding ascii
+          @"
+          A.C.E. is a portable Team Shapes Windows application. Extract A.C.E.zip before running A.C.E.exe.
+
+          This release is intentionally unsigned. Windows may display Unknown publisher or a Microsoft Defender SmartScreen warning. Team Shapes appears in the executable's file metadata, but it is not a Windows-verified publisher.
+
+          No Python installation or third-party runtime libraries are required.
+          "@ | Set-Content -LiteralPath (Join-Path $release "RELEASE_NOTES.md") -Encoding utf8
 
       - name: Create GitHub release
         shell: pwsh
@@ -99,4 +91,4 @@ jobs:
             release/A.C.E.zip `
             release/SHA256SUMS.txt `
             --title "A.C.E. Inventory $env:RELEASE_TAG" `
-            --generate-notes
+            --notes-file release/RELEASE_NOTES.md

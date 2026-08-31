@@ -27,11 +27,12 @@ Create the empty repository on GitHub before adding the remote. Do not add a Git
 
 ## Upload the executable
 
-1. Open the repository on GitHub.
-2. Select **Releases**, then **Draft a new release**.
-3. Create a tag such as `v1.0.0`.
-4. Title it `A.C.E. Inventory v1.0.0`.
-5. Attach `release/A.C.E.zip`.
-6. State that the physical Tera 5100 label scan remains the final acceptance check.
+1. Open the repository's **Actions** tab.
+2. Select **Windows release (unverified publisher)**.
+3. Select **Run workflow** and enter a tag matching the application version, such as `v1.6.5`.
+4. Wait for the tests, build, metadata checks, ZIP packaging, and release publication to finish.
+5. Download `A.C.E.zip` from the resulting Release page and extract it before running.
+
+The executable carries Team Shapes product metadata but is intentionally unsigned. Windows may display **Unknown publisher** or a SmartScreen warning.
 
 The release ZIP is intentionally ignored by git. It should be attached to the Release page, not committed to the repository.
