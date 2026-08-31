@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import tkinter as tk
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from inventory_app.image_utils import (
     scaled_dimensions,
     write_png_icon,
 )
+from inventory_app.ui import InventoryApp
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +25,24 @@ class LocalImageUtilitiesTests(unittest.TestCase):
         self.assertEqual(len(durations), 31)
         self.assertEqual(sum(durations), 2700)
         self.assertEqual(durations[:3], [100, 100, 100])
+
+    def test_startup_animation_composites_optimized_gif_frames(self) -> None:
+        path = PROJECT_ROOT / "portable_data" / "startup_assets" / "startup_animation.gif"
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            frames, durations = InventoryApp._load_startup_animation(root, path)
+            self.assertEqual(len(frames), len(durations))
+            self.assertEqual(len(frames), 31)
+            self.assertTrue(all(frame.width() == 960 for frame in frames))
+            self.assertTrue(all(frame.height() == 540 for frame in frames))
+
+            # Frame 5 is stored as a partial GIF update. The red heart lies
+            # outside that update and must still be present in the completed frame.
+            self.assertFalse(frames[5].transparency_get(680, 50))
+            self.assertEqual(frames[5].get(680, 50), (230, 72, 46))
+        finally:
+            root.destroy()
 
     def test_png_dimensions_and_proportional_display_scaling(self) -> None:
         path = PROJECT_ROOT / "portable_data" / "window_icon.png"

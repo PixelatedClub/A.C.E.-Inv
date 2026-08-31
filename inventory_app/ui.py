@@ -3128,10 +3128,38 @@ class InventoryApp(tk.Tk):
 
     def _load_startup_animation(self, path: Path) -> tuple[list[tk.PhotoImage], list[int]]:
         durations = read_gif_frame_durations(path)
-        frames = [
+        raw_frames = [
             tk.PhotoImage(master=self, file=str(path), format=f"gif -index {frame_index}")
             for frame_index in range(len(durations))
         ]
+        if not raw_frames:
+            return [], durations
+
+        # Tk exposes optimized GIF frames as transparent delta images. Displaying
+        # those deltas directly makes the logo look fragmented. The bundled
+        # animation retains prior pixels between frames, so build a complete
+        # snapshot after overlaying each delta onto the accumulated image.
+        composite = tk.PhotoImage(
+            master=self,
+            width=raw_frames[0].width(),
+            height=raw_frames[0].height(),
+        )
+        frames: list[tk.PhotoImage] = []
+        for raw_frame in raw_frames:
+            composite.tk.call(
+                str(composite),
+                "copy",
+                str(raw_frame),
+                "-compositingrule",
+                "overlay",
+            )
+            completed_frame = tk.PhotoImage(
+                master=self,
+                width=composite.width(),
+                height=composite.height(),
+            )
+            completed_frame.tk.call(str(completed_frame), "copy", str(composite))
+            frames.append(completed_frame)
         return frames, durations
 
     @staticmethod
