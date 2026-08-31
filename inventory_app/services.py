@@ -69,12 +69,32 @@ REPORT_COLUMN_LABELS = {
     "available_after": "Available Now",
     "details": "Explanation",
     "source": "Recorded By",
+    "activity_class": "Activity Class",
+    "weekly_event": "Weekly Event",
+    "cadet_id": "Cadet ID",
+    "size_entry_id": "Fitting Entry #",
+    "full_name": "Cadet",
+    "email": "Cadet Email",
+    "size_label": "Measurement / Item",
+    "size_value": "Recorded Size",
+    "catalog_item_no": "Catalog Item #",
+    "source_category": "Source Category",
+    "report_category": "Report Category",
+    "created_at": "Created",
+    "updated_at": "Last Updated",
+    "total_quantity": "Total Quantity",
+    "available_quantity": "Available Quantity",
+    "status": "Current Status",
+    "id_status": "Item Number Status",
+    "validation_note": "Validation Note",
 }
 REPORT_TIMESTAMP_FIELDS = {
     "event_time",
     "checkout_time",
     "closed_time",
     "acquired_time",
+    "created_at",
+    "updated_at",
 }
 RANKS = (
     ("GMC100", "GMC 100 (C/4C)"),
@@ -3593,6 +3613,404 @@ class InventoryService:
             ],
         )
 
+    def get_weekly_activity_report_data(
+        self,
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        bluf: str = "",
+        major_activities: str = "",
+        coa_validation: str = "",
+    ) -> dict[str, Any]:
+        """Build one consolidated, read-only weekly activity report."""
+        report_end = self._parse_report_date(end_date, field_name="End date") or date.today()
+        report_start = self._parse_report_date(start_date, field_name="Start date")
+        if report_start is None:
+            report_start = report_end - timedelta(days=6)
+        if report_end < report_start:
+            raise InventoryError("End date cannot be before start date.")
+
+        with self.database.connect() as connection:
+            change_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT
+                        change_id, event_time, action, barcode_id, wings_item_no,
+                        item_name, category, variant, item_type, quantity_change,
+                        total_before, total_after, available_before, available_after,
+                        details, source
+                    FROM inventory_changes
+                    ORDER BY event_time, change_id
+                    """
+                ).fetchall()
+            ]
+            item_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT
+                        items.barcode_id, items.wings_item_no, items.item_name,
+                        items.category, items.variant, items.item_type,
+                        items.total_quantity, items.available_quantity, items.status,
+                        items.created_at, items.updated_at,
+                        COALESCE(catalog.is_wings, 0) AS is_wings
+                    FROM items
+                    LEFT JOIN wings_catalog AS catalog
+                        ON catalog.item_no = items.wings_item_no
+                    ORDER BY items.created_at, items.barcode_id
+                    """
+                ).fetchall()
+            ]
+            transaction_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT
+                        transactions.transaction_id, transactions.barcode_id,
+                        items.wings_item_no, items.item_name, items.category,
+                        items.variant, items.item_type, transactions.cadet_id,
+                        transactions.cadet_name, transactions.cadet_email,
+                        transactions.approved_by_name, transactions.approved_by_role,
+                        transactions.checkout_time,
+                        CASE
+                            WHEN transactions.return_time IS NULL THEN 'Checked Out'
+                            WHEN trim(transactions.disposition) <> '' THEN transactions.disposition
+                            ELSE 'Returned'
+                        END AS disposition,
+                        transactions.return_time AS closed_time,
+                        transactions.return_approved_by_name AS closed_by_name,
+                        transactions.return_approved_by_role AS closed_by_role,
+                        transactions.condition_notes
+                    FROM transactions
+                    LEFT JOIN items ON items.barcode_id = transactions.barcode_id
+                    ORDER BY transactions.checkout_time, transactions.transaction_id
+                    """
+                ).fetchall()
+            ]
+            fitting_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT
+                        entries.size_entry_id, entries.cadet_id, cadets.full_name,
+                        cadets.email, entries.category AS source_category,
+                        entries.size_label, entries.size_value,
+                        entries.catalog_item_no, entries.notes,
+                        entries.created_at, entries.updated_at
+                    FROM cadet_size_entries AS entries
+                    JOIN cadets ON cadets.cadet_id = entries.cadet_id
+                    ORDER BY entries.updated_at, entries.size_entry_id
+                    """
+                ).fetchall()
+            ]
+            cadet_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT cadet_id, full_name, email, created_at, updated_at
+                    FROM cadets
+                    ORDER BY created_at, cadet_id
+                    """
+                ).fetchall()
+            ]
+
+        def in_range(row: dict[str, Any], *date_fields: str) -> bool:
+            return self._report_row_matches_date_range(
+                row,
+                date_fields=tuple(date_fields),
+                start_day=report_start,
+                end_day=report_end,
+            )
+
+        filtered_changes: list[dict[str, Any]] = []
+        repair_change_count = 0
+        routine_units_added = 0
+        recovered_units = 0
+        units_removed = 0
+        net_units_recorded = 0
+        inferred_wings_barcodes: set[str] = set()
+        for raw_row in change_rows:
+            if not in_range(raw_row, "event_time"):
+                continue
+            if self._is_easter_egg_barcode(str(raw_row.get("barcode_id") or "")):
+                continue
+            row = dict(raw_row)
+            action = str(row.get("action") or "")
+            details = str(row.get("details") or "")
+            lowered = f"{action} {details}".casefold()
+            quantity_change = int(row.get("quantity_change") or 0)
+            is_repair = "duplicate" in lowered or "alias" in lowered or "consolidat" in lowered
+            if is_repair:
+                activity_class = "Barcode / Mapping Repair"
+                repair_change_count += 1
+            elif quantity_change < 0:
+                activity_class = "Inventory Removal"
+                units_removed += -quantity_change
+                net_units_recorded += quantity_change
+            elif action in {"New Item Added", "Quantity Added"}:
+                activity_class = "Routine Inventory Add"
+                routine_units_added += quantity_change
+                net_units_recorded += quantity_change
+            elif quantity_change > 0 and "recover" in lowered:
+                activity_class = "Recovered Inventory Add"
+                recovered_units += quantity_change
+                net_units_recorded += quantity_change
+            elif quantity_change > 0:
+                activity_class = "Other Inventory Add"
+                routine_units_added += quantity_change
+                net_units_recorded += quantity_change
+            else:
+                activity_class = "Record Update"
+            if "inferred" in lowered and str(row.get("wings_item_no") or "").strip():
+                inferred_wings_barcodes.add(str(row.get("barcode_id") or "").strip().upper())
+            row["activity_class"] = activity_class
+            filtered_changes.append(row)
+
+        filtered_items: list[dict[str, Any]] = []
+        for raw_row in item_rows:
+            if not in_range(raw_row, "created_at"):
+                continue
+            if self._is_easter_egg_barcode(str(raw_row.get("barcode_id") or "")):
+                continue
+            row = dict(raw_row)
+            barcode_id = str(row.get("barcode_id") or "").strip().upper()
+            if int(row.pop("is_wings") or 0):
+                if barcode_id in inferred_wings_barcodes:
+                    row["id_status"] = "Official WINGS ID - verify"
+                    row["validation_note"] = "Numeric catalog match was inferred; validate in WINGS."
+                else:
+                    row["id_status"] = "Official WINGS ID"
+                    row["validation_note"] = "Matched to the official WINGS catalog."
+            else:
+                row["id_status"] = "Local A.C.E. ID"
+                row["validation_note"] = "Validate against WINGS before using this row for an official import."
+            filtered_items.append(row)
+
+        filtered_transactions: list[dict[str, Any]] = []
+        checkout_count = 0
+        closed_count = 0
+        checkout_cadets: set[str] = set()
+        for raw_row in transaction_rows:
+            if self._is_easter_egg_barcode(str(raw_row.get("barcode_id") or "")):
+                continue
+            checkout_in_range = in_range(raw_row, "checkout_time")
+            closed_in_range = in_range(raw_row, "closed_time")
+            if not checkout_in_range and not closed_in_range:
+                continue
+            row = dict(raw_row)
+            if checkout_in_range and closed_in_range:
+                row["weekly_event"] = "Checked Out and Closed"
+            elif checkout_in_range:
+                row["weekly_event"] = "Checked Out"
+            else:
+                row["weekly_event"] = "Closed / Returned"
+            if checkout_in_range:
+                checkout_count += 1
+                cadet_key = str(row.get("cadet_id") or "").strip()
+                if not cadet_key:
+                    cadet_key = str(row.get("cadet_email") or "").strip().casefold()
+                if cadet_key:
+                    checkout_cadets.add(cadet_key)
+            if closed_in_range:
+                closed_count += 1
+            filtered_transactions.append(row)
+
+        filtered_fittings: list[dict[str, Any]] = []
+        fitted_cadets: set[str] = set()
+        for raw_row in fitting_rows:
+            if not in_range(raw_row, "updated_at"):
+                continue
+            row = dict(raw_row)
+            source_category = str(row.get("source_category") or "").strip()
+            size_label = str(row.get("size_label") or "").strip()
+            if size_label.casefold() == "blues service coat":
+                row["report_category"] = "Blues Service Coats"
+            else:
+                row["report_category"] = source_category or "Measurements"
+            filtered_fittings.append(row)
+            fitted_cadets.add(str(row.get("cadet_id") or row.get("email") or ""))
+
+        filtered_cadets = [row for row in cadet_rows if in_range(row, "created_at")]
+        identifier_audit = self.inventory_item_number_audit()
+        inventory_rows_with_ids = identifier_audit["total_rows"] - identifier_audit["missing_rows"]
+        report_period = f"{report_start.isoformat()} through {report_end.isoformat()}"
+        generated_text = datetime.now().strftime("%b %d, %Y %I:%M %p").replace(" 0", " ")
+
+        summary_rows = [
+            {"Report Section": "BLUF", "Value": bluf.strip() or "Not provided."},
+            {"Report Section": "MAs", "Value": major_activities.strip() or "Not provided."},
+            {"Report Section": "COA / Validation", "Value": coa_validation.strip() or "Not provided."},
+            {"Report Section": "Report Period", "Value": report_period},
+            {"Report Section": "Generated", "Value": generated_text},
+            {"Report Section": "Routine Units Added", "Value": routine_units_added},
+            {"Report Section": "Recovered Units Added", "Value": recovered_units},
+            {"Report Section": "Units Removed", "Value": units_removed},
+            {"Report Section": "Net Units Recorded", "Value": net_units_recorded},
+            {"Report Section": "New Catalog Rows", "Value": len(filtered_items)},
+            {"Report Section": "Checkout Transactions", "Value": checkout_count},
+            {"Report Section": "Cadets With Checkouts", "Value": len(checkout_cadets)},
+            {"Report Section": "Returns / Acquisitions Closed", "Value": closed_count},
+            {"Report Section": "Fitting Entries Recorded or Updated", "Value": len(filtered_fittings)},
+            {"Report Section": "Cadets Fitted", "Value": len(fitted_cadets)},
+            {"Report Section": "New Cadet Records", "Value": len(filtered_cadets)},
+            {"Report Section": "Barcode / Mapping Repairs", "Value": repair_change_count},
+            {"Report Section": "Live Inventory Rows", "Value": identifier_audit["total_rows"]},
+            {"Report Section": "Rows With Item Numbers", "Value": inventory_rows_with_ids},
+            {"Report Section": "Official WINGS IDs", "Value": identifier_audit["official_rows"]},
+            {"Report Section": "Local A.C.E. IDs", "Value": identifier_audit["local_rows"]},
+        ]
+
+        quality_rows = [
+            {
+                "Check": "Inventory item-number coverage",
+                "Value": f"{inventory_rows_with_ids} of {identifier_audit['total_rows']}",
+                "Status": "Complete" if identifier_audit["missing_rows"] == 0 else "Needs Attention",
+                "Details": "Every live inventory row should have an official WINGS ID or an explicit local A.C.E. ID.",
+            },
+            {
+                "Check": "Official WINGS mappings",
+                "Value": identifier_audit["official_rows"],
+                "Status": "Recorded",
+                "Details": "Rows currently matched to the bundled official WINGS catalog.",
+            },
+            {
+                "Check": "Local A.C.E. mappings",
+                "Value": identifier_audit["local_rows"],
+                "Status": "Validate in WINGS" if identifier_audit["local_rows"] else "None",
+                "Details": "Local identifiers preserve accountability but are not official WINGS item numbers.",
+            },
+            {
+                "Check": "Weekly inferred WINGS mappings",
+                "Value": len(inferred_wings_barcodes),
+                "Status": "Validate in WINGS" if inferred_wings_barcodes else "None",
+                "Details": "Numeric matches marked as inferred in the audit trail during this report period.",
+            },
+        ]
+
+        def readable_sheet(
+            sheet_name: str,
+            columns: list[str],
+            rows: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            formatted_rows = self.format_report_rows(rows)
+            readable_columns = [self.report_column_label(column) for column in columns]
+            return {
+                "sheet_name": sheet_name,
+                "columns": readable_columns,
+                "rows": [
+                    {
+                        self.report_column_label(column): row.get(column, "")
+                        for column in columns
+                    }
+                    for row in formatted_rows
+                ],
+            }
+
+        sheets = [
+            {
+                "sheet_name": "Weekly Summary",
+                "columns": ["Report Section", "Value"],
+                "rows": summary_rows,
+            },
+            readable_sheet(
+                "Inventory Changes",
+                [
+                    "event_time", "activity_class", "action", "item_name", "variant",
+                    "quantity_change", "total_before", "total_after", "available_after",
+                    "barcode_id", "wings_item_no", "category", "details", "source",
+                ],
+                filtered_changes,
+            ),
+            readable_sheet(
+                "New Catalog Items",
+                [
+                    "created_at", "barcode_id", "wings_item_no", "id_status", "item_name",
+                    "category", "variant", "item_type", "total_quantity",
+                    "available_quantity", "status", "validation_note",
+                ],
+                filtered_items,
+            ),
+            readable_sheet(
+                "Transactions",
+                [
+                    "weekly_event", "transaction_id", "checkout_time", "closed_time",
+                    "disposition", "cadet_name", "cadet_email", "barcode_id",
+                    "wings_item_no", "item_name", "variant", "approved_by_name",
+                    "closed_by_name", "condition_notes",
+                ],
+                filtered_transactions,
+            ),
+            readable_sheet(
+                "Fittings",
+                [
+                    "updated_at", "cadet_id", "full_name", "email", "report_category",
+                    "source_category", "size_label", "size_value", "catalog_item_no", "notes",
+                ],
+                filtered_fittings,
+            ),
+            readable_sheet(
+                "New Cadet Records",
+                ["created_at", "cadet_id", "full_name", "email", "updated_at"],
+                filtered_cadets,
+            ),
+            {
+                "sheet_name": "Data Quality",
+                "columns": ["Check", "Value", "Status", "Details"],
+                "rows": quality_rows,
+            },
+        ]
+        return {
+            "start_date": report_start.isoformat(),
+            "end_date": report_end.isoformat(),
+            "summary": {
+                "routine_units_added": routine_units_added,
+                "recovered_units": recovered_units,
+                "units_removed": units_removed,
+                "net_units_recorded": net_units_recorded,
+                "new_catalog_rows": len(filtered_items),
+                "checkout_transactions": checkout_count,
+                "checkout_cadets": len(checkout_cadets),
+                "closed_transactions": closed_count,
+                "fitting_entries": len(filtered_fittings),
+                "cadets_fitted": len(fitted_cadets),
+                "new_cadets": len(filtered_cadets),
+                "barcode_repairs": repair_change_count,
+            },
+            "sheets": sheets,
+        }
+
+    def export_weekly_activity_spreadsheet(
+        self,
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        bluf: str = "",
+        major_activities: str = "",
+        coa_validation: str = "",
+        open_after: bool = True,
+    ) -> Path:
+        report = self.get_weekly_activity_report_data(
+            start_date=start_date,
+            end_date=end_date,
+            bluf=bluf,
+            major_activities=major_activities,
+            coa_validation=coa_validation,
+        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_dir = self.settings.database_path.parent / "exports"
+        export_path = export_dir / (
+            f"ACE_weekly_activity_{report['start_date']}_to_{report['end_date']}_{timestamp}.xlsx"
+        )
+        self._write_simple_xlsx_workbook(
+            export_path,
+            workbook_title=f"{self.settings.org_name} Weekly Activity Report",
+            sheets=report["sheets"],
+        )
+        if open_after:
+            open_file(export_path)
+        return export_path
+
     def export_inventory_spreadsheet(self, *, open_after: bool = True) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         export_dir = self.settings.database_path.parent / "exports"
@@ -4380,7 +4798,7 @@ class InventoryService:
             '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
             '<alignment horizontal="center" vertical="center" wrapText="1"/></xf>'
             '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1">'
-            '<alignment vertical="center"/></xf>'
+            '<alignment vertical="top" wrapText="1"/></xf>'
             '</cellXfs>'
             '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
             "</styleSheet>"
@@ -4525,12 +4943,15 @@ class InventoryService:
             "Category": 22, "Subcategory": 22, "Sex": 9, "Stock #": 18,
             "UoM": 9, "Go to Writeoffs": 18, "Source": 18,
             "Report Detail": 22, "Value": 70, "Date & Time": 24,
+            "Report Section": 30, "Activity Class": 26, "Weekly Event": 24,
             "Change": 24, "Item": 38, "Size / Variant": 20,
             "Qty Change": 12, "Previous Total": 15, "New Total": 12,
             "Available Now": 15, "Barcode": 16, "WINGS / Local Item #": 24,
             "Explanation": 54, "Cadet": 28, "Cadet Email": 30,
             "Approved By": 24, "Checked Out": 24, "Closed": 24,
-            "Notes": 48,
+            "Notes": 48, "Details": 58, "Validation Note": 58,
+            "Measurement / Item": 28, "Recorded Size": 18,
+            "Source Category": 22, "Report Category": 22,
         }
         columns_xml = "".join(
             f'<col min="{index}" max="{index}" width="{width_map.get(column, 18)}" customWidth="1"/>'

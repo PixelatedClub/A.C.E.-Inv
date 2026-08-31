@@ -32,6 +32,8 @@ The application starts with:
 - Cadet records and complete transaction history
 - Inventory, readiness, and accountability reports with inclusive start/end date filters
 - One-click current-week and trailing-seven-day report presets with filtered CSV export
+- One-click consolidated weekly Excel report with a popup for BLUF, MAs, and COA/validation
+- Automatic weekly detail tabs for inventory changes, new catalog items, transactions, fittings, cadet records, and data-quality checks
 - Dedicated Cadet Fitting Index for recording uniform sizes and measurements by cadet
 - Dedicated acquired/purchased-items report with CSV export
 - Dual-location compressed backups with retention controls

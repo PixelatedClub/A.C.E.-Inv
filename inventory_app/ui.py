@@ -389,6 +389,11 @@ class InventoryApp(tk.Tk):
         self.report_start_date_var = tk.StringVar()
         self.report_end_date_var = tk.StringVar()
         self.report_summary_var = tk.StringVar(value="No report loaded yet.")
+        self.weekly_report_narrative = {
+            "bluf": "",
+            "major_activities": "",
+            "coa_validation": "",
+        }
         self.cadet_search_var = tk.StringVar()
         self.cadet_sort_var = tk.StringVar(value="ID")
         self.cadet_last_name_var = tk.StringVar()
@@ -1685,6 +1690,19 @@ class InventoryApp(tk.Tk):
         )
         ttk.Button(date_controls, text="Clear Dates", command=self._clear_report_dates).grid(row=0, column=6)
 
+        weekly_controls = ttk.Frame(top)
+        weekly_controls.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        ttk.Button(
+            weekly_controls,
+            text="Generate Weekly Report",
+            command=self._generate_weekly_report,
+        ).grid(row=0, column=0, padx=(0, 10))
+        ttk.Label(
+            weekly_controls,
+            text="One workbook with BLUF, MAs, COA/validation, inventory activity, transactions, fittings, and data-quality checks.",
+            style="Subtitle.TLabel",
+        ).grid(row=0, column=1, sticky="w")
+
         report_frame = ttk.LabelFrame(self.reports_tab, text="Report Results", padding=10)
         report_frame.grid(row=1, column=0, sticky="nsew")
         report_frame.columnconfigure(0, weight=1)
@@ -2372,6 +2390,133 @@ class InventoryApp(tk.Tk):
         self.report_start_date_var.set("")
         self.report_end_date_var.set("")
         self.refresh_report()
+
+    def _generate_weekly_report(self) -> None:
+        report_details = self._prompt_weekly_report_details()
+        if report_details is None:
+            return
+        self.report_start_date_var.set(report_details["start_date"])
+        self.report_end_date_var.set(report_details["end_date"])
+        self._run_action(
+            lambda: self.service.export_weekly_activity_spreadsheet(
+                start_date=report_details["start_date"],
+                end_date=report_details["end_date"],
+                bluf=report_details["bluf"],
+                major_activities=report_details["major_activities"],
+                coa_validation=report_details["coa_validation"],
+                open_after=True,
+            ),
+            success_message="Weekly activity report generated and opened.",
+            on_success=lambda path: self._set_status(f"Weekly report saved to {path}"),
+        )
+
+    def _prompt_weekly_report_details(self) -> dict[str, str] | None:
+        today = date.today()
+        default_start = self.report_start_date_var.get().strip() or (
+            today - timedelta(days=6)
+        ).isoformat()
+        default_end = self.report_end_date_var.get().strip() or today.isoformat()
+        result: dict[str, dict[str, str] | None] = {"value": None}
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Weekly Activity Report")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.geometry("780x700")
+        dialog.minsize(680, 610)
+        dialog.configure(bg="#eef4fb")
+
+        container = ttk.Frame(dialog, padding=18)
+        container.grid(row=0, column=0, sticky="nsew")
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
+        for row_index in (4, 6, 8):
+            container.rowconfigure(row_index, weight=1)
+
+        ttk.Label(container, text="Generate Weekly Activity Report", style="Title.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 4)
+        )
+        ttk.Label(
+            container,
+            text="The activity counts and detail tabs are filled automatically. Add the leadership context you want shown on the summary sheet.",
+            style="Subtitle.TLabel",
+            wraplength=730,
+        ).grid(row=1, column=0, sticky="ew", pady=(0, 12))
+
+        date_frame = ttk.Frame(container)
+        date_frame.grid(row=2, column=0, sticky="w", pady=(0, 12))
+        start_var = tk.StringVar(value=default_start)
+        end_var = tk.StringVar(value=default_end)
+        ttk.Label(date_frame, text="Start Date (YYYY-MM-DD)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(date_frame, textvariable=start_var, width=14).grid(row=0, column=1, padx=(6, 18))
+        ttk.Label(date_frame, text="End Date (YYYY-MM-DD)").grid(row=0, column=2, sticky="w")
+        ttk.Entry(date_frame, textvariable=end_var, width=14).grid(row=0, column=3, padx=(6, 0))
+
+        ttk.Label(container, text="BLUF (Bottom Line Up Front)").grid(
+            row=3, column=0, sticky="w", pady=(0, 4)
+        )
+        bluf_text = tk.Text(container, height=5, wrap="word", bg="white", fg="#0f172a")
+        bluf_text.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
+        bluf_text.insert("1.0", self.weekly_report_narrative["bluf"])
+
+        ttk.Label(container, text="MAs (Major Activities / Accomplishments)").grid(
+            row=5, column=0, sticky="w", pady=(0, 4)
+        )
+        activities_text = tk.Text(container, height=5, wrap="word", bg="white", fg="#0f172a")
+        activities_text.grid(row=6, column=0, sticky="nsew", pady=(0, 10))
+        activities_text.insert("1.0", self.weekly_report_narrative["major_activities"])
+
+        ttk.Label(container, text="COA / Validation").grid(
+            row=7, column=0, sticky="w", pady=(0, 4)
+        )
+        coa_text = tk.Text(container, height=5, wrap="word", bg="white", fg="#0f172a")
+        coa_text.grid(row=8, column=0, sticky="nsew")
+        coa_text.insert("1.0", self.weekly_report_narrative["coa_validation"])
+
+        button_frame = ttk.Frame(container)
+        button_frame.grid(row=9, column=0, sticky="e", pady=(14, 0))
+
+        def generate() -> None:
+            start_value = start_var.get().strip()
+            end_value = end_var.get().strip()
+            try:
+                start_day = date.fromisoformat(start_value)
+                end_day = date.fromisoformat(end_value)
+            except ValueError:
+                self._show_error("Weekly report dates must use YYYY-MM-DD format.")
+                return
+            if end_day < start_day:
+                self._show_error("The weekly report end date cannot be before its start date.")
+                return
+            payload = {
+                "start_date": start_value,
+                "end_date": end_value,
+                "bluf": bluf_text.get("1.0", "end-1c").strip(),
+                "major_activities": activities_text.get("1.0", "end-1c").strip(),
+                "coa_validation": coa_text.get("1.0", "end-1c").strip(),
+            }
+            self.weekly_report_narrative.update(
+                {
+                    "bluf": payload["bluf"],
+                    "major_activities": payload["major_activities"],
+                    "coa_validation": payload["coa_validation"],
+                }
+            )
+            result["value"] = payload
+            dialog.destroy()
+
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ttk.Button(button_frame, text="Generate and Open Excel", command=generate).grid(
+            row=0, column=1
+        )
+        dialog.bind("<Control-Return>", lambda _event: generate())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        bluf_text.focus_set()
+        self.wait_window(dialog)
+        return result["value"]
 
     def refresh_label_library(self) -> None:
         selected_ids = self._selected_label_barcode_ids() if hasattr(self, "label_library_tree") else []

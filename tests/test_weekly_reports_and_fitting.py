@@ -4,6 +4,7 @@ import gc
 import tempfile
 import unittest
 import zipfile
+from datetime import date, timedelta
 from pathlib import Path
 
 from inventory_app.config import AppSettings
@@ -232,6 +233,106 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
         self.assertIn("Date &amp; Time", detail_xml)
         self.assertIn("Qty Change", detail_xml)
         self.assertIn("WINGS / Local Item #", detail_xml)
+
+    def test_weekly_activity_report_combines_narratives_metrics_and_detail_tabs(self) -> None:
+        barcode = self.service.create_manual_item(
+            barcode_id="WEEKLY-0001",
+            item_name="Weekly Combined Report Item",
+            category="Test Gear",
+            variant="Large",
+            item_type="Uniform",
+            quantity=3,
+        )
+        cadet = self.service.save_cadet(
+            cadet_name="Report, A, Cadet",
+            cadet_email="report-cadet@example.com",
+        )
+        self.service.save_cadet_size_entry(
+            cadet_id=int(cadet["cadet_id"]),
+            size_label="Blues Service Coat",
+            size_value="40R",
+            category="Other",
+            catalog_item_no="3189",
+        )
+        self.service.checkout_item(
+            barcode_id=barcode,
+            cadet_name="Report, A, Cadet",
+            cadet_email="report-cadet@example.com",
+            quantity=1,
+            approved_by={"role": "CADRE", "display_name": "CADRE", "admin_id": None},
+        )
+        self.service.return_item(
+            barcode_id=barcode,
+            quantity=1,
+            approved_by={"role": "CADRE", "display_name": "CADRE", "admin_id": None},
+        )
+
+        report_end = date.today() + timedelta(days=1)
+        report_start = report_end - timedelta(days=6)
+        before_counts = self._operational_table_counts()
+        report = self.service.get_weekly_activity_report_data(
+            start_date=report_start.isoformat(),
+            end_date=report_end.isoformat(),
+            bluf="BLUF test narrative",
+            major_activities="MAs test narrative",
+            coa_validation="COA validation test narrative",
+        )
+
+        self.assertEqual(report["summary"]["routine_units_added"], 3)
+        self.assertEqual(report["summary"]["checkout_transactions"], 1)
+        self.assertEqual(report["summary"]["closed_transactions"], 1)
+        self.assertEqual(report["summary"]["fitting_entries"], 1)
+        self.assertEqual(report["summary"]["cadets_fitted"], 1)
+        self.assertEqual(report["summary"]["new_cadets"], 1)
+        self.assertEqual(
+            [sheet["sheet_name"] for sheet in report["sheets"]],
+            [
+                "Weekly Summary",
+                "Inventory Changes",
+                "New Catalog Items",
+                "Transactions",
+                "Fittings",
+                "New Cadet Records",
+                "Data Quality",
+            ],
+        )
+        fitting_sheet = report["sheets"][4]
+        self.assertEqual(fitting_sheet["rows"][0]["Report Category"], "Blues Service Coats")
+
+        export_path = self.service.export_weekly_activity_spreadsheet(
+            start_date=report_start.isoformat(),
+            end_date=report_end.isoformat(),
+            bluf="BLUF test narrative",
+            major_activities="MAs test narrative",
+            coa_validation="COA validation test narrative",
+            open_after=False,
+        )
+        self.assertTrue(export_path.exists())
+        with zipfile.ZipFile(export_path) as workbook:
+            workbook_xml = workbook.read("xl/workbook.xml").decode("utf-8")
+            summary_xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        for sheet_name in (
+            "Weekly Summary",
+            "Inventory Changes",
+            "New Catalog Items",
+            "Transactions",
+            "Fittings",
+            "New Cadet Records",
+            "Data Quality",
+        ):
+            self.assertIn(f'name="{sheet_name}"', workbook_xml)
+        self.assertIn("BLUF test narrative", summary_xml)
+        self.assertIn("MAs test narrative", summary_xml)
+        self.assertIn("COA validation test narrative", summary_xml)
+        self.assertEqual(self._operational_table_counts(), before_counts)
+
+    def _operational_table_counts(self) -> dict[str, int]:
+        tables = ("items", "inventory_changes", "cadets", "cadet_size_entries", "transactions")
+        with self.service.database.connect() as connection:
+            return {
+                table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in tables
+            }
 
     def test_every_inventory_row_receives_official_or_local_item_number(self) -> None:
         barcode = self.service.create_manual_item(
