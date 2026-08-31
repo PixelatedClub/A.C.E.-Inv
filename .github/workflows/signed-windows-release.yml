@@ -1,0 +1,102 @@
+name: Signed Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag, for example v1.6.2
+        required: true
+        default: v1.6.2
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-sign-release:
+    name: Build, sign, and publish A.C.E.
+    runs-on: windows-2025
+    environment: release-signing
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade pip pyinstaller -r requirements.txt
+
+      - name: Run automated tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+
+      - name: Build Team Shapes executable
+        shell: pwsh
+        run: .\tools\build_windows_release.ps1 -PythonPath python
+
+      - name: Sign in to Azure using OIDC
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Authenticode-sign A.C.E.
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\release\A.C.E.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: A.C.E. Inventory System by Team Shapes
+          description-url: https://github.com/PixelatedClub/A.C.E.-Inv
+
+      - name: Verify publisher signature and metadata
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE "release\A.C.E.exe"
+          $signature = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($signature.Status -ne "Valid" -or -not $signature.SignerCertificate) {
+              throw "A.C.E.exe does not have a valid trusted signature. Status: $($signature.Status)"
+          }
+          $info = (Get-Item -LiteralPath $exe).VersionInfo
+          if ($info.CompanyName -ne "Team Shapes") {
+              throw "Unexpected CompanyName metadata: $($info.CompanyName)"
+          }
+          Write-Host "Verified signer: $($signature.SignerCertificate.Subject)"
+          Write-Host "Company metadata: $($info.CompanyName)"
+
+      - name: Package signed release and checksums
+        shell: pwsh
+        run: |
+          $release = Join-Path $env:GITHUB_WORKSPACE "release"
+          $exe = Join-Path $release "A.C.E.exe"
+          $zip = Join-Path $release "A.C.E.zip"
+          Compress-Archive -LiteralPath $exe -DestinationPath $zip -CompressionLevel Optimal -Force
+          $exeHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+          @(
+              "$zipHash  A.C.E.zip"
+              "$exeHash  A.C.E.exe (inside ZIP)"
+          ) | Set-Content -LiteralPath (Join-Path $release "SHA256SUMS.txt") -Encoding ascii
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release create $env:RELEASE_TAG `
+            release/A.C.E.zip `
+            release/SHA256SUMS.txt `
+            --title "A.C.E. Inventory $env:RELEASE_TAG" `
+            --generate-notes

@@ -9,6 +9,9 @@ from pathlib import Path
 
 
 APP_TITLE = "A.C.E."
+APP_VERSION = "1.6.2"
+PRODUCT_NAME = "A.C.E. Inventory System"
+PUBLISHER_BRAND = "Team Shapes"
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
     BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))

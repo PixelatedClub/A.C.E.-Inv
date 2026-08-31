@@ -2,6 +2,8 @@
 
 A.C.E. is a portable AFROTC clothing and equipment inventory system built for simple cadet use. It supports WINGS-ready imports and exports, searchable equipment records, compact barcode labels, scanner-based checkout and return, cadet history, reports, backups, and flash-drive deployment on Windows.
 
+A.C.E. is developed and published under the **Team Shapes** brand.
+
 ## Download A.C.E.
 
 **[Download the current A.C.E. Windows application](https://github.com/PixelatedClub/A.C.E.-Inv/releases/latest/download/A.C.E.zip)**
@@ -60,6 +62,34 @@ py -3 .\main.py
 ```
 
 The included `Launch A.C.E.cmd` starts the executable when one is present, or falls back to the Python source version.
+
+## Libraries and build tools
+
+- Python 3.10 or newer
+- Pillow 10 or newer for icons, images, and animation frames
+- Tkinter/Tcl-Tk and SQLite from the Python standard library for the interface and database
+- PyInstaller for the standalone Windows executable
+- Python standard-library CSV, ZIP, XML, HTML, hashing, date/time, and filesystem modules for imports, exports, reports, backups, and generated files
+
+A.C.E. does not require pandas, OpenPyXL, ReportLab, or a separate barcode package.
+
+## Windows publisher and signed releases
+
+Windows file properties identify **Team Shapes** as the product company. A trusted Windows "Verified publisher" name comes from the Authenticode certificate, not editable file metadata. The signed-release workflow refuses to publish unless Azure Artifact Signing supplies a valid identity-verified signature and the final signature passes verification.
+
+Configure the `release-signing` GitHub environment with these OIDC secrets:
+
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+
+Configure these environment variables after the Artifact Signing account and certificate profile are approved:
+
+- `AZURE_ARTIFACT_SIGNING_ENDPOINT`
+- `AZURE_ARTIFACT_SIGNING_ACCOUNT`
+- `AZURE_ARTIFACT_SIGNING_PROFILE`
+
+The certificate identity may be an individual legal name until Team Shapes becomes a validated organization or DBA. Team Shapes remains the visible product brand either way.
 
 ## Data and privacy
 

@@ -20,6 +20,8 @@ from PIL import Image, ImageSequence, ImageTk
 from .barcode_utils import extract_scanned_barcode
 from .config import (
     APP_TITLE,
+    APP_VERSION,
+    PUBLISHER_BRAND,
     AppSettings,
     alternate_icons_enabled,
     device_backup_setup_completed,
@@ -5481,7 +5483,12 @@ class InventoryApp(tk.Tk):
                 "<Shift-Button-1>",
                 lambda _event: self._open_hidden_easter_egg_export(),
             )
-        ttk.Button(container, text="Close", command=window.destroy).grid(row=2, column=0)
+        ttk.Label(
+            container,
+            text=f"{APP_TITLE} {APP_VERSION} | Published by {PUBLISHER_BRAND}",
+            style="Subtitle.TLabel",
+        ).grid(row=2, column=0, pady=(0, 12))
+        ttk.Button(container, text="Close", command=window.destroy).grid(row=3, column=0)
 
     def _toggle_alternate_icons(self, parent: tk.Misc) -> None:
         enabled = not self.alternate_icons_enabled

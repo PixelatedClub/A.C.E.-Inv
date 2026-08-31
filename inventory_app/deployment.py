@@ -96,6 +96,9 @@ def create_transfer_installer(
             "--add-data",
             f"{portable_data_dir};portable_data",
         ]
+        version_file = project_dir / "tools" / "windows_version_info.txt"
+        if version_file.exists():
+            command.extend(["--version-file", str(version_file)])
         if icon_path is not None:
             command.extend(["--icon", str(Path(icon_path).resolve())])
         command.append(str(main_script))

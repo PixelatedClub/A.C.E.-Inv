@@ -18,12 +18,14 @@ A.C.E. Backups/
 build/
 dist/
 *.spec
+build_release/
 build_release_*/
 smoke_test_*/
 
 # Local release files - upload these through GitHub Releases
 release/*.exe
 release/*.zip
+release/SHA256SUMS.txt
 
 # Temporary and inspection files
 tmp/
