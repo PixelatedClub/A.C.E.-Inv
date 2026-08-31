@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import Any, Callable
 from tkinter import filedialog, messagebox, ttk
 
-from PIL import Image, ImageSequence, ImageTk
-
 from .barcode_utils import extract_scanned_barcode
 from .config import (
     APP_TITLE,
@@ -31,6 +29,7 @@ from .config import (
 )
 from .services import InventoryError, InventoryService, REPORT_COLUMN_LABELS
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
+from .image_utils import read_gif_frame_durations
 from .wings_catalog import WINGS_COLUMNS
 
 try:
@@ -178,7 +177,7 @@ class InventoryApp(tk.Tk):
         self.alternate_icons_enabled = alternate_icons_enabled()
         self.startup_splash: tk.Toplevel | None = None
         self.startup_frame_label: tk.Label | None = None
-        self.startup_frames: list[ImageTk.PhotoImage] = []
+        self.startup_frames: list[tk.PhotoImage] = []
         self.startup_frame_durations: list[int] = []
         self.startup_frame_offsets: list[int] = []
         self.startup_finish_after_id: str | None = None
@@ -2982,15 +2981,12 @@ class InventoryApp(tk.Tk):
                 return candidate
         return None
 
-    @staticmethod
-    def _load_startup_animation(path: Path) -> tuple[list[ImageTk.PhotoImage], list[int]]:
-        frames: list[ImageTk.PhotoImage] = []
-        durations: list[int] = []
-        with Image.open(path) as image:
-            for frame in ImageSequence.Iterator(image):
-                converted = frame.convert("RGBA")
-                frames.append(ImageTk.PhotoImage(converted))
-                durations.append(int(frame.info.get("duration", image.info.get("duration", 100))))
+    def _load_startup_animation(self, path: Path) -> tuple[list[tk.PhotoImage], list[int]]:
+        durations = read_gif_frame_durations(path)
+        frames = [
+            tk.PhotoImage(master=self, file=str(path), format=f"gif -index {frame_index}")
+            for frame_index in range(len(durations))
+        ]
         return frames, durations
 
     @staticmethod

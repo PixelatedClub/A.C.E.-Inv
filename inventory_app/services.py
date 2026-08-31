@@ -7,19 +7,17 @@ import sqlite3
 import zipfile
 from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
-
-from PIL import Image
 
 from .barcode_utils import compact_wings_barcode, compose_barcode, normalize_token, open_file, write_label_pdf
 from .config import AppSettings, BASE_DIR
 from .database import EASTER_EGG_ADMINS, EASTER_EGG_CADETS, EASTER_EGG_OUTFIT_HISTORY, InventoryDatabase, utc_now
 from .deployment import create_transfer_installer, ensure_icon_file
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
+from .image_utils import read_png_dimensions, scaled_dimensions
 from .wings_catalog import WINGS_COLUMNS
 
 
@@ -4609,31 +4607,17 @@ class InventoryService:
         if not image_path.exists():
             return None
 
-        with Image.open(image_path) as source_image:
-            rendered_image = source_image.copy()
-            if getattr(source_image, "is_animated", False):
-                source_image.seek(0)
-                rendered_image = source_image.convert("RGBA")
-            elif rendered_image.mode not in {"RGB", "RGBA"}:
-                rendered_image = rendered_image.convert("RGBA")
-
-            max_width_px = image.get("max_width_px")
-            max_height_px = image.get("max_height_px")
-            if max_width_px or max_height_px:
-                resized_image = rendered_image.copy()
-                # Devin says Spade is smart, so every sprite gets normalized before Excel tries to show it off :D
-                resized_image.thumbnail(
-                    (
-                        int(max_width_px or rendered_image.width),
-                        int(max_height_px or rendered_image.height),
-                    ),
-                    getattr(Image, "Resampling", Image).NEAREST,
-                )
-                rendered_image = resized_image
-
-            output = BytesIO()
-            rendered_image.save(output, format="PNG")
-            image_bytes = output.getvalue()
+        image_bytes = image_path.read_bytes()
+        try:
+            source_width, source_height = read_png_dimensions(image_bytes)
+        except ValueError:
+            return None
+        display_width, display_height = scaled_dimensions(
+            source_width,
+            source_height,
+            max_width=image.get("max_width_px"),
+            max_height=image.get("max_height_px"),
+        )
 
         media_name = f"image{media_index}.png"
         return {
@@ -4641,8 +4625,8 @@ class InventoryService:
             "content": image_bytes,
             "row": max(1, int(image.get("row", 1))),
             "column": max(1, int(image.get("column", 1))),
-            "width_px": rendered_image.width,
-            "height_px": rendered_image.height,
+            "width_px": display_width,
+            "height_px": display_height,
             "name": str(image.get("name") or media_name),
         }
 

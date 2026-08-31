@@ -1,1 +1,1 @@
-Pillow>=10.0
+# A.C.E. has no third-party runtime dependencies.

@@ -66,12 +66,11 @@ The included `Launch A.C.E.cmd` starts the executable when one is present, or fa
 ## Libraries and build tools
 
 - Python 3.10 or newer
-- Pillow 10 or newer for icons, images, and animation frames
 - Tkinter/Tcl-Tk and SQLite from the Python standard library for the interface and database
 - PyInstaller for the standalone Windows executable
 - Python standard-library CSV, ZIP, XML, HTML, hashing, date/time, and filesystem modules for imports, exports, reports, backups, and generated files
 
-A.C.E. does not require pandas, OpenPyXL, ReportLab, or a separate barcode package.
+A.C.E. has no third-party runtime dependencies. Image dimensions, GIF timing, ICO packaging, barcodes, PDFs, and Excel files are handled by local project code plus Python's standard library. PyInstaller is used only while producing the standalone Windows executable; end users do not need it.
 
 ## Windows publisher and signed releases
 

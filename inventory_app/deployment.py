@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image
+from .image_utils import write_png_icon
 
 
 def ensure_icon_file(source_png: Path | None, destination: Path) -> Path:
@@ -25,11 +25,13 @@ def ensure_icon_file(source_png: Path | None, destination: Path) -> Path:
     if not source_path.exists():
         raise FileNotFoundError(f"Icon source image not found: {source_path}")
 
-    with Image.open(source_path) as image:
-        rgba = image.convert("RGBA")
-        sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
-        rgba.save(destination, format="ICO", sizes=sizes)
-    return destination
+    if source_path.suffix.casefold() == ".ico":
+        if source_path != destination:
+            shutil.copy2(source_path, destination)
+        return destination
+    if source_path.suffix.casefold() != ".png":
+        raise ValueError("App icons must be provided as an ICO or PNG file.")
+    return write_png_icon(source_path, destination)
 
 
 def create_transfer_installer(
