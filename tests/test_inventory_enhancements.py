@@ -225,6 +225,40 @@ class InventoryEnhancementTests(unittest.TestCase):
         self.assertEqual(created["variant"], "C/1ST LT")
         self.assertEqual(created["item_type"], "INSIGNIA,RANK,OFFICER FEMALE CLOTH")
 
+    def test_official_item_with_blank_size_uses_one_size_and_can_be_restocked(self) -> None:
+        preview = self.service.preview_generated_barcode(
+            category="ignored",
+            variant="",
+            item_type="ignored",
+            item_name="ignored",
+            wings_item_no="971",
+        )
+        created = self.service.save_generated_barcode(
+            category="ignored",
+            variant="",
+            item_type="ignored",
+            item_name="ignored",
+            wings_item_no="971",
+            units_per_barcode=2,
+        )
+        restocked = self.service.save_generated_barcode(
+            category="ignored",
+            variant="",
+            item_type="ignored",
+            item_name="ignored",
+            wings_item_no="971",
+            units_per_barcode=3,
+        )
+
+        self.assertEqual(preview["variant"], "ONE SIZE")
+        self.assertEqual(created["wings_item_no"], "971")
+        self.assertEqual(created["item_name"], "BAG DUFFEL")
+        self.assertEqual(created["variant"], "ONE SIZE")
+        self.assertEqual(created["item_type"], "DUFFEL BAG")
+        self.assertEqual(restocked["barcode_id"], created["barcode_id"])
+        self.assertEqual(restocked["action"], "restocked")
+        self.assertEqual(restocked["total_quantity"], 5)
+
     def test_new_barcode_reuses_lowest_available_number(self) -> None:
         first = self._save_item(variant="First", item_name="First Test Item")
         second = self._save_item(variant="Second", item_name="Second Test Item")

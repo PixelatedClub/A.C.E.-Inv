@@ -39,6 +39,7 @@ EASTER_EGG_CATALOG_VALUES = {
 RANK_CATALOG_VERSION = "rank-catalog-v4-official-metal-no-notes"
 INVENTORY_CHANGE_AUDIT_VERSION = "inventory-change-audit-v1"
 LOCAL_INVENTORY_MAPPING_SOURCE = "A.C.E. Local Inventory Mapping"
+ONE_SIZE_VARIANT = "ONE SIZE"
 REPORT_COLUMN_LABELS = {
     "transaction_id": "Transaction #",
     "change_id": "Change #",
@@ -1818,7 +1819,7 @@ class InventoryService:
             wings_record = self.get_wings_catalog_item(wings_item_no)
             wings_item_no = str(wings_record["item_no"])
             category = str(wings_record["category"])
-            variant = str(wings_record["size"])
+            variant = str(wings_record["size"] or "").strip() or ONE_SIZE_VARIANT
             item_type = str(wings_record["subcategory"] or wings_record["item_name"])
             item_name = str(wings_record["item_name"])
         category = self._clean_lookup(category, "Category")
@@ -4561,6 +4562,7 @@ class InventoryService:
             "wings_item_no",
             "category",
             "details",
+            "source",
         ]
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -4577,7 +4579,8 @@ class InventoryService:
                     barcode_id,
                     wings_item_no,
                     category,
-                    details
+                    details,
+                    source
                 FROM inventory_changes
                 ORDER BY event_time DESC, change_id DESC
                 """

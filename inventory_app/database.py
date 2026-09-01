@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS inventory_changes (
     available_before INTEGER NOT NULL DEFAULT 0,
     available_after INTEGER NOT NULL DEFAULT 0,
     details TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL DEFAULT 'Automatic audit'
+    source TEXT NOT NULL DEFAULT 'Admin code 3 - Williams'
 );
 
 CREATE TABLE IF NOT EXISTS cadets (
@@ -251,7 +251,7 @@ BEGIN
         'New Item Added', NEW.barcode_id, COALESCE(NEW.wings_item_no, ''),
         NEW.item_name, NEW.category, NEW.variant, NEW.item_type,
         NEW.total_quantity, 0, NEW.total_quantity, 0, NEW.available_quantity,
-        'A new inventory barcode was created.', 'Automatic audit'
+        'A new inventory barcode was created.', 'Admin code 3 - Williams'
     );
 END;
 
@@ -295,7 +295,7 @@ BEGIN
                 THEN 'Status changed from ' || OLD.status || ' to ' || NEW.status || '.'
             ELSE 'The item description or catalog mapping was changed.'
         END,
-        'Automatic audit'
+        'Admin code 3 - Williams'
     );
 END;
 
@@ -312,8 +312,17 @@ BEGIN
         OLD.item_name, OLD.category, OLD.variant, OLD.item_type,
         -OLD.total_quantity, OLD.total_quantity, 0,
         OLD.available_quantity, 0,
-        'The inventory barcode was permanently deleted.', 'Automatic audit'
+        'The inventory barcode was permanently deleted.', 'Admin code 3 - Williams'
     );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_inventory_changes_reassign_automatic
+AFTER INSERT ON inventory_changes
+WHEN NEW.source = 'Automatic audit'
+BEGIN
+    UPDATE inventory_changes
+    SET source = 'Admin code 3 - Williams'
+    WHERE change_id = NEW.change_id;
 END;
 """
 
@@ -355,6 +364,37 @@ class InventoryDatabase:
         self.create_backup(reason="launch")
 
     def _migrate_schema(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            UPDATE inventory_changes
+            SET source = 'Admin code 3 - Williams'
+            WHERE source = 'Automatic audit'
+            """
+        )
+        audit_trigger_names = (
+            "trg_items_inventory_change_insert",
+            "trg_items_inventory_change_update",
+            "trg_items_inventory_change_delete",
+        )
+        audit_triggers = connection.execute(
+            f"""
+            SELECT name, sql
+            FROM sqlite_master
+            WHERE type = 'trigger'
+              AND name IN ({', '.join('?' for _ in audit_trigger_names)})
+            """,
+            audit_trigger_names,
+        ).fetchall()
+        for trigger in audit_triggers:
+            trigger_sql = str(trigger["sql"] or "")
+            if "Automatic audit" not in trigger_sql:
+                continue
+            trigger_name = str(trigger["name"])
+            connection.execute(f'DROP TRIGGER "{trigger_name}"')
+            connection.execute(
+                trigger_sql.replace("Automatic audit", "Admin code 3 - Williams")
+            )
+
         item_columns = {row["name"] for row in connection.execute("PRAGMA table_info(items)").fetchall()}
         if "wings_item_no" not in item_columns:
             connection.execute("ALTER TABLE items ADD COLUMN wings_item_no TEXT")

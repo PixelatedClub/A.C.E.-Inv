@@ -185,12 +185,17 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
 
         columns, rows = self.service.get_report("Inventory Changes")
         self.assertIn("quantity_change", columns)
+        self.assertIn("source", columns)
         matching = [row for row in rows if row["barcode_id"] == barcode]
         self.assertEqual(
             {row["action"] for row in matching},
             {"New Item Added", "Quantity Added", "Item Details Edited"},
         )
         self.assertEqual(sum(int(row["quantity_change"]) for row in matching), 5)
+        self.assertEqual(
+            {row["source"] for row in matching},
+            {"Admin code 3 - Williams"},
+        )
         summary = self.service.summarize_report("Inventory Changes", matching)
         self.assertIn("5 unit(s) added", summary)
 
@@ -203,6 +208,7 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
         ]
         self.assertEqual(len(deleted), 1)
         self.assertEqual(deleted[0]["quantity_change"], -5)
+        self.assertEqual(deleted[0]["source"], "Admin code 3 - Williams")
 
     def test_readable_report_spreadsheet_has_summary_and_friendly_headers(self) -> None:
         self.service.create_manual_item(
@@ -233,6 +239,7 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
         self.assertIn("Date &amp; Time", detail_xml)
         self.assertIn("Qty Change", detail_xml)
         self.assertIn("WINGS / Local Item #", detail_xml)
+        self.assertIn("Recorded By", detail_xml)
 
     def test_weekly_activity_report_combines_narratives_metrics_and_detail_tabs(self) -> None:
         barcode = self.service.create_manual_item(

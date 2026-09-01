@@ -12,11 +12,20 @@ if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
 
 
 from inventory_app import InventoryApp, load_settings
+from inventory_app.config import APP_TITLE
+from inventory_app.single_instance import SingleInstanceGuard
+
+
+SINGLE_INSTANCE_MUTEX = r"Local\TeamShapes.ACE.InventorySystem"
 
 
 def main() -> None:
-    app = InventoryApp(load_settings())
-    app.mainloop()
+    with SingleInstanceGuard.acquire(SINGLE_INSTANCE_MUTEX) as instance:
+        if not instance.is_primary:
+            instance.activate_existing_window(APP_TITLE)
+            return
+        app = InventoryApp(load_settings())
+        app.mainloop()
 
 
 if __name__ == "__main__":

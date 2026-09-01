@@ -27,7 +27,7 @@ from .config import (
     save_device_backup_settings,
     save_settings,
 )
-from .services import InventoryError, InventoryService, REPORT_COLUMN_LABELS
+from .services import InventoryError, InventoryService, ONE_SIZE_VARIANT, REPORT_COLUMN_LABELS
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
 from .image_utils import read_gif_frame_durations
 from .wings_catalog import WINGS_COLUMNS
@@ -4306,13 +4306,14 @@ class InventoryApp(tk.Tk):
 
         results: list[tuple[str, tuple[str, str, str, str, str]]] = []
         for row in self.service.list_wings_catalog(search=query_text)[:100]:
+            catalog_size = str(row["size"] or "").strip() or ONE_SIZE_VARIANT
             sex = f" | {row['sex']}" if row["sex"] else ""
             stock = f" | Stock {row['stock_number']}" if row["stock_number"] else ""
             label = (
-                f"WINGS {row['item_no']} | {row['item_name']} | {row['size']}"
+                f"WINGS {row['item_no']} | {row['item_name']} | {catalog_size}"
                 f"{sex}{stock}"
             )
-            official_name = f"{row['item_name']} ({row['size']})"
+            official_name = f"{row['item_name']} ({catalog_size})"
             results.append(
                 (
                     label,
@@ -4320,7 +4321,7 @@ class InventoryApp(tk.Tk):
                         str(row["category"]),
                         str(row["item_name"]),
                         official_name,
-                        str(row["size"]),
+                        catalog_size,
                         str(row["item_no"]),
                     ),
                 )

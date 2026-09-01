@@ -4,6 +4,8 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
+**Current source version: 1.6.8 (September 1, 2026)**
+
 ## Download A.C.E.
 
 **[Download the current A.C.E. Windows application](https://github.com/PixelatedClub/A.C.E.-Inv/releases/latest/download/A.C.E.zip)**
@@ -24,8 +26,10 @@ The application starts with:
 - WINGS inventory import and ordered Excel export
 - Complete 493-item official WINGS catalog, including the Auburn inventory workbook additions
 - Compact barcode generation for 1 x 2-inch labels
+- Targeted PLS892 label exports with selectable barcodes and per-barcode print quantities
 - In-place editing of existing barcode records and their total quantities
 - Lowest-unused-number allocation for new A.C.E. barcodes
+- Single-instance startup protection: repeated clicks keep one A.C.E. window and database session
 - Scanner-based checkout plus a cadet-centered Returns tab
 - Explicit returning-cadet selection with individual or all-held-item returns
 - Permanent-issue and purchase disposition from each cadet's checked-out inventory
@@ -34,11 +38,13 @@ The application starts with:
 - One-click current-week and trailing-seven-day report presets with filtered CSV export
 - One-click consolidated weekly Excel report with a popup for BLUF, MAs, and COA/validation
 - Automatic weekly detail tabs for inventory changes, new catalog items, transactions, fittings, cadet records, and data-quality checks
+- Inventory-change reports show who recorded each addition, edit, restock, and deletion
 - Dedicated Cadet Fitting Index for recording uniform sizes and measurements by cadet
 - Dedicated acquired/purchased-items report with CSV export
 - Dual-location compressed backups with retention controls
 - Portable, relative data paths for flash-drive use
 - Built-in index management for WINGS and custom items
+- Official WINGS items without a listed size use `ONE SIZE`, allowing items such as duffel bags to be cataloged normally
 - Automatic item-number coverage: every inventory row has an official WINGS number or an explicit local A.C.E. number
 - Separate complete-inventory Excel export that includes local-only items without putting them in the official WINGS import file
 - Custom-item category and subcategory suggestions based on values already in use
@@ -53,6 +59,7 @@ The application starts with:
 4. Sign in with the cadre administrator code `Det005`.
 
 Do not run the executable from inside the ZIP.
+If A.C.E. is already running, another launch exits instead of opening a competing inventory window. When the authenticated main window is visible, the additional launch attempts to bring it forward.
 
 ## Run from source
 
@@ -79,6 +86,8 @@ A.C.E. has no third-party runtime dependencies. Image dimensions, GIF timing, IC
 Windows file properties identify **Team Shapes** as the product company. Current releases are intentionally unsigned, so Team Shapes is an unverified product brand rather than a Windows "Verified publisher." Windows may display **Unknown publisher** or a Microsoft Defender SmartScreen warning when a newly downloaded executable is opened.
 
 The release workflow runs the complete automated test suite, builds the standalone executable, verifies its Team Shapes metadata and version, and publishes `A.C.E.zip` with SHA-256 checksums. A self-signed certificate is not used because Windows does not publicly trust self-signed publishers.
+
+See `CHANGELOG.md` for version-specific changes.
 
 ## Data and privacy
 
