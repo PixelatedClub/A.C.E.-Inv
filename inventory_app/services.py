@@ -238,7 +238,10 @@ class _WingsHtmlTableParser(HTMLParser):
             self._row = None
 
 
-class InventoryService:
+from .loans import LoanServiceMixin
+
+
+class InventoryService(LoanServiceMixin):
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
         self.database = InventoryDatabase(settings)
@@ -1784,6 +1787,7 @@ class InventoryService:
         query = f"""
             SELECT
                 barcode_id,
+                wings_item_no,
                 item_name,
                 category,
                 variant,
@@ -3247,12 +3251,16 @@ class InventoryService:
         cadet_email: str,
         approved_by: dict[str, Any] | None = None,
         condition_notes: str = "",
+        loan_due_date: str = "",
+        loan_purpose: str = "",
     ) -> list[dict[str, Any]]:
         if not line_items:
             raise InventoryError("Add at least one barcode to the checkout list first.")
 
         normalized_name, normalized_email = self._validate_cadet_identity(cadet_name, cadet_email)
         approval = self._normalize_admin_identity(approved_by)
+        if loan_due_date:
+            loan_due_date = self.validate_loan_date(loan_due_date, earliest=date.today())
         processed_items: list[dict[str, Any]] = []
 
         with self.database.connect() as connection:
@@ -3272,7 +3280,7 @@ class InventoryService:
                     )
 
                 for _ in range(quantity):
-                    connection.execute(
+                    cursor = connection.execute(
                         """
                         INSERT INTO transactions(
                             barcode_id, cadet_id, cadet_name, cadet_email, checkout_time,
@@ -3293,6 +3301,13 @@ class InventoryService:
                             condition_notes.strip(),
                         ),
                     )
+                    if loan_due_date:
+                        connection.execute(
+                            'UPDATE transactions SET loan_due_date=?, loan_purpose=? WHERE transaction_id=?',
+                            (loan_due_date, loan_purpose.strip(), cursor.lastrowid),
+                        )
+                        self._loan_event(connection, cursor.lastrowid, 'Loan issued',
+                                         f'Due {loan_due_date}; {loan_purpose.strip()}', approval['label'])
                 self._sync_item_state(connection, barcode)
                 processed_items.append(
                     {

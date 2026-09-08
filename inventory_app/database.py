@@ -364,6 +364,14 @@ class InventoryDatabase:
         self.create_backup(reason="launch")
 
     def _migrate_schema(self, connection: sqlite3.Connection) -> None:
+        transaction_columns = {row['name'] for row in connection.execute('PRAGMA table_info(transactions)')}
+        for column in ('loan_due_date', 'loan_purpose'):
+            if column not in transaction_columns:
+                connection.execute(f"ALTER TABLE transactions ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        connection.execute('''CREATE TABLE IF NOT EXISTS loan_events (
+            event_id INTEGER PRIMARY KEY, event_time TEXT NOT NULL,
+            transaction_id INTEGER, action TEXT NOT NULL, details TEXT NOT NULL,
+            recorded_by TEXT NOT NULL)''')
         connection.execute(
             """
             UPDATE inventory_changes

@@ -1,5 +1,14 @@
 # A.C.E. Changelog
 
+## 1.7.0 - 2026-09-08
+
+- Added temporary-loan checkout, custom deadlines, two-/three-/four-week presets, due-date editing, and overdue status.
+- Added administrator reminders on startup and hourly while the app is open; returns and acquisitions clear outstanding reminders.
+- Added a printable Monday report with prior-week activity and a dated current loan register.
+- Added audited conversion of existing checkouts to loans without changing inventory counts.
+- Added transactional profile merging with preserved history and conflict checks for fittings.
+- Retained the compact Items workspace from local version 1.6.9 and corrected item-number retrieval for its details panel.
+
 ## 1.6.8 - 2026-09-01
 
 - Added Windows single-instance protection. Repeated launches no longer open competing A.C.E. windows or database sessions.

@@ -28,6 +28,7 @@ from .config import (
     save_settings,
 )
 from .services import InventoryError, InventoryService, ONE_SIZE_VARIANT, REPORT_COLUMN_LABELS
+from .loan_ui import LoanUiMixin
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
 from .image_utils import read_gif_frame_durations
 from .wings_catalog import WINGS_COLUMNS
@@ -144,7 +145,7 @@ CATALOG_ALIASES = {
 }
 
 
-class InventoryApp(tk.Tk):
+class InventoryApp(LoanUiMixin, tk.Tk):
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
         self.settings = settings
@@ -470,6 +471,7 @@ class InventoryApp(tk.Tk):
         self._build_wings_export_tab()
         self._build_checkout_tab()
         self._build_returns_tab()
+        self._build_loans_tab()
         self._build_barcode_directory_tab()
         self._build_cadets_tab()
         self._build_cadet_fitting_tab()
@@ -534,117 +536,8 @@ class InventoryApp(tk.Tk):
         ).grid(row=4, column=0, sticky="e", pady=(12, 0))
 
     def _build_items_tab(self) -> None:
-        self.items_tab.columnconfigure(0, weight=2)
-        self.items_tab.columnconfigure(1, weight=1)
-        self.items_tab.rowconfigure(1, weight=1)
-
-        controls = ttk.Frame(self.items_tab)
-        controls.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        controls.columnconfigure(1, weight=1)
-
-        ttk.Label(controls, text="Search").grid(row=0, column=0, sticky="w")
-        search_entry = ttk.Entry(controls, textvariable=self.item_search_var)
-        search_entry.grid(row=0, column=1, sticky="ew", padx=(6, 12))
-        search_entry.bind("<Return>", lambda _event: self.refresh_items_tree())
-
-        ttk.Label(controls, text="Status").grid(row=0, column=2, sticky="w")
-        status_combo = ttk.Combobox(
-            controls,
-            textvariable=self.item_status_filter_var,
-            state="readonly",
-            values=["All", "Available", "Checked Out", "Retired", "Lost"],
-            width=16,
-        )
-        status_combo.grid(row=0, column=3, sticky="w", padx=(6, 12))
-        status_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items_tree())
-
-        ttk.Button(controls, text="Refresh", command=self.refresh_items_tree).grid(row=0, column=4, sticky="e")
-
-        tree_frame = ttk.LabelFrame(self.items_tab, text="Inventory Items", padding=10)
-        tree_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
-        tree_frame.columnconfigure(0, weight=1)
-        tree_frame.rowconfigure(0, weight=1)
-
-        self.items_tree = self._create_tree(
-            tree_frame,
-            columns=[
-                "barcode_id",
-                "item_name",
-                "category",
-                "variant",
-                "item_type",
-                "status",
-                "total_quantity",
-                "available_quantity",
-                "notes",
-            ],
-        )
-        self.items_tree.grid(row=0, column=0, sticky="nsew")
-        self.items_tree.bind("<<TreeviewSelect>>", self._on_item_selected)
-
-        form = ttk.LabelFrame(self.items_tab, text="Inventory Editor", padding=12)
-        form.grid(row=1, column=1, sticky="nsew")
-        form.columnconfigure(1, weight=1)
-
-        ttk.Label(form, textvariable=self.item_form_status_var).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
-
-        ttk.Label(form, text="Barcode").grid(row=1, column=0, sticky="w")
-        ttk.Entry(form, textvariable=self.item_barcode_var).grid(row=1, column=1, sticky="ew", pady=3)
-
-        ttk.Label(form, text="Item").grid(row=2, column=0, sticky="w")
-        item_name_combo = ttk.Combobox(form, textvariable=self.item_name_var)
-        item_name_combo.grid(row=2, column=1, sticky="ew", pady=3)
-        self.item_name_combos.append(item_name_combo)
-
-        ttk.Label(form, text="Category").grid(row=3, column=0, sticky="w")
-        category_combo = ttk.Combobox(form, textvariable=self.item_category_var)
-        category_combo.grid(row=3, column=1, sticky="ew", pady=3)
-        self.category_combos.append(category_combo)
-
-        ttk.Label(form, text="Variant").grid(row=4, column=0, sticky="w")
-        variant_combo = ttk.Combobox(form, textvariable=self.item_variant_var)
-        variant_combo.grid(row=4, column=1, sticky="ew", pady=3)
-        self.variant_combos.append(variant_combo)
-
-        ttk.Label(form, text="Quantity").grid(row=5, column=0, sticky="w")
-        ttk.Spinbox(form, from_=1, to=1000, textvariable=self.item_quantity_var, width=10).grid(
-            row=5, column=1, sticky="w", pady=3
-        )
-
-        ttk.Label(form, text="Notes").grid(row=6, column=0, sticky="nw", pady=(6, 0))
-        self.item_notes_text = tk.Text(form, height=8, wrap="word")
-        self.item_notes_text.grid(row=6, column=1, sticky="nsew", pady=(6, 0))
-        form.rowconfigure(6, weight=1)
-
-        actions = ttk.Frame(form)
-        actions.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        for index in range(3):
-            actions.columnconfigure(index, weight=1)
-
-        ttk.Button(actions, text="Create Manual Item", command=self._create_manual_item).grid(
-            row=0, column=0, sticky="ew", padx=(0, 4)
-        )
-        ttk.Button(actions, text="Restock Barcode", command=self._restock_item).grid(
-            row=0, column=1, sticky="ew", padx=(4, 0)
-        )
-        ttk.Button(actions, text="Delete Permanently", command=self._delete_item).grid(
-            row=0, column=2, sticky="ew", padx=(4, 0)
-        )
-        ttk.Button(actions, text="Set Available", command=lambda: self._set_item_status("Available")).grid(
-            row=1, column=0, sticky="ew", padx=(0, 4), pady=(6, 0)
-        )
-        ttk.Button(actions, text="Mark Lost", command=lambda: self._set_item_status("Lost")).grid(
-            row=1, column=1, sticky="ew", padx=(4, 0), pady=(6, 0)
-        )
-        ttk.Button(actions, text="Retire", command=lambda: self._set_item_status("Retired")).grid(
-            row=1, column=2, sticky="ew", padx=(4, 0), pady=(6, 0)
-        )
-        ttk.Button(actions, text="Clear Form", command=self._clear_item_form).grid(
-            row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0)
-        )
-        ttk.Button(actions, text="Edit Selected Barcode", command=self._edit_selected_item).grid(
-            row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0)
-        )
+        from .items_ui import build_items_tab
+        build_items_tab(self)
 
     def _build_generator_tab(self) -> None:
         self.generator_tab.columnconfigure(0, weight=1)
@@ -1692,6 +1585,7 @@ class InventoryApp(tk.Tk):
 
         weekly_controls = ttk.Frame(top)
         weekly_controls.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        ttk.Button(weekly_controls, text='Monday morning report', command=self._monday_report).grid(row=1, column=0, pady=(8, 0), sticky='w')
         ttk.Button(
             weekly_controls,
             text="Generate Weekly Report",
@@ -1861,6 +1755,7 @@ class InventoryApp(tk.Tk):
         )
 
     def refresh_all_views(self) -> None:
+        self.refresh_loans()
         self._populate_catalog_values()
         self.refresh_dashboard()
         self.refresh_items_tree()
@@ -2286,14 +2181,12 @@ class InventoryApp(tk.Tk):
             self.items_tree,
             [
                 "barcode_id",
+                "wings_item_no",
                 "item_name",
-                "category",
                 "variant",
-                "item_type",
                 "status",
                 "total_quantity",
                 "available_quantity",
-                "notes",
             ],
             rows,
         )
@@ -3215,6 +3108,7 @@ class InventoryApp(tk.Tk):
         self.deiconify()
         self.lift()
         self.after(100, self._focus_checkout_scan)
+        self.after(1000, self._check_loan_reminders)
 
     def _prompt_for_backup_location(self) -> None:
         dialog = tk.Toplevel(self)
@@ -4747,19 +4641,8 @@ class InventoryApp(tk.Tk):
         )
 
     def _create_manual_item(self) -> None:
-        self._run_action(
-            lambda: self.service.create_manual_item(
-                barcode_id=self.item_barcode_var.get(),
-                item_name=self.item_name_var.get(),
-                category=self.item_category_var.get(),
-                variant=self.item_variant_var.get(),
-                item_type=self.item_name_var.get(),
-                quantity=self.item_quantity_var.get(),
-                notes=self._get_text(self.item_notes_text),
-            ),
-            success_message="Manual inventory item created.",
-            on_success=self._after_inventory_write,
-        )
+        from .items_ui import create_manual_item
+        create_manual_item(self)
 
     def _restock_item(self) -> None:
         self._run_action(
@@ -4805,8 +4688,15 @@ class InventoryApp(tk.Tk):
         )
 
     def _after_inventory_write(self, _result: object = None) -> None:
+        barcode = (_result.get('barcode_id', '') if isinstance(_result, dict) else
+                   _result if isinstance(_result, str) else self.item_barcode_var.get())
         self.refresh_all_views()
-        self._clear_item_form()
+        if barcode in self.items_tree.get_children():
+            self.items_tree.selection_set(barcode)
+            self.items_tree.see(barcode)
+            self._on_item_selected()
+        else:
+            self._clear_item_form()
 
     def _on_item_selected(self, _event: tk.Event | None = None) -> None:
         selection = self.items_tree.selection()
@@ -4822,7 +4712,8 @@ class InventoryApp(tk.Tk):
         self.item_variant_var.set(row["variant"])
         self.item_type_var.set(row["item_type"])
         self.item_quantity_var.set("1")
-        self._set_text(self.item_notes_text, row["notes"])
+        self._set_text(self.item_notes_text, "")
+        self.item_detail_var.set(f"{row['item_name']}\n\nBarcode: {row['barcode_id']}\nWINGS / Local #: {row.get('wings_item_no') or 'Not assigned'}\nCategory: {row['category']}\nSize / Variant: {row['variant']}\nType: {row['item_type']}\n\nCurrent notes: {str(row.get('notes') or 'None')[:350]}")
         self.item_form_status_var.set(
             f"Status: {row['status']} | Available {row['available_quantity']} / Total {row['total_quantity']}"
         )
@@ -4835,7 +4726,9 @@ class InventoryApp(tk.Tk):
         self.item_type_var.set("")
         self.item_quantity_var.set("1")
         self._set_text(self.item_notes_text, "")
-        self.item_form_status_var.set("Status: New item")
+        self.item_form_status_var.set('Select an inventory row to manage it.')
+        self.item_detail_var.set('No item selected')
+        self.items_tree.selection_remove(*self.items_tree.selection())
 
     def _preview_generated_barcode(self) -> None:
         if not self._generator_selection_is_ready():
