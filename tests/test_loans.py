@@ -1,6 +1,7 @@
 import gc
 import tempfile
 import unittest
+import zipfile
 from datetime import date, timedelta
 from pathlib import Path
 from inventory_app.config import AppSettings
@@ -70,10 +71,15 @@ class LoanTests(unittest.TestCase):
     def test_report_has_period_and_loans(self):
         self.issue(loan_due_date=str(date.today()))
         report=self.service.export_monday_report(date(2026,9,7))
-        text=report.read_text(encoding='utf-8')
-        self.assertIn('2026-08-31 through 2026-09-06',text)
-        self.assertIn('Current loans',text)
-        self.assertIn('Test Coat',text)
+        self.assertEqual(report.suffix, '.xlsx')
+        with zipfile.ZipFile(report) as workbook:
+            workbook_xml=workbook.read('xl/workbook.xml').decode('utf-8')
+            summary_xml=workbook.read('xl/worksheets/sheet1.xml').decode('utf-8')
+            current_loans_xml=workbook.read('xl/worksheets/sheet7.xml').decode('utf-8')
+        self.assertIn('name="Executive Summary"',workbook_xml)
+        self.assertIn('2026-08-31 through 2026-09-06',summary_xml)
+        self.assertIn('CURRENT LOANS',summary_xml)
+        self.assertIn('Test Coat',current_loans_xml)
 
 
 if __name__=='__main__':unittest.main()

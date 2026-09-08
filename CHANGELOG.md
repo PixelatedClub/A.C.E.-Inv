@@ -1,5 +1,12 @@
 # A.C.E. Changelog
 
+## 1.7.3 - 2026-09-08
+
+- Unified previous-week, date-range, and individual report exports under one polished Excel report design.
+- Added an Executive Summary with BLUF, key metrics, daily activity, major activities, and course of action / validation.
+- Replaced the separate Monday HTML report with the same formatted Excel workbook used by all other A.C.E. activity reports.
+- Improved report labels and detail sheets for easier review and printing.
+
 ## 1.7.2 - 2026-09-08
 
 - Added Loan Queued Items beside the standard checkout action so the same barcode queue and cadet fields can create a temporary loan.

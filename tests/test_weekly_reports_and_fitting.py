@@ -234,7 +234,7 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
         with zipfile.ZipFile(export_path) as workbook:
             workbook_xml = workbook.read("xl/workbook.xml").decode("utf-8")
             detail_xml = workbook.read("xl/worksheets/sheet2.xml").decode("utf-8")
-        self.assertIn('name="Summary"', workbook_xml)
+        self.assertIn('name="Executive Summary"', workbook_xml)
         self.assertIn('name="Inventory Changes"', workbook_xml)
         self.assertIn("Date &amp; Time", detail_xml)
         self.assertIn("Qty Change", detail_xml)
@@ -294,12 +294,13 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
         self.assertEqual(
             [sheet["sheet_name"] for sheet in report["sheets"]],
             [
-                "Weekly Summary",
-                "Inventory Changes",
+                "Executive Summary",
+                "Catalog Activity",
                 "New Catalog Items",
-                "Transactions",
+                "Checkouts",
                 "Fittings",
-                "New Cadet Records",
+                "Cadet Records",
+                "Current Loans",
                 "Data Quality",
             ],
         )
@@ -319,18 +320,21 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
             workbook_xml = workbook.read("xl/workbook.xml").decode("utf-8")
             summary_xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
         for sheet_name in (
-            "Weekly Summary",
-            "Inventory Changes",
+            "Executive Summary",
+            "Catalog Activity",
             "New Catalog Items",
-            "Transactions",
+            "Checkouts",
             "Fittings",
-            "New Cadet Records",
+            "Cadet Records",
+            "Current Loans",
             "Data Quality",
         ):
             self.assertIn(f'name="{sheet_name}"', workbook_xml)
         self.assertIn("BLUF test narrative", summary_xml)
         self.assertIn("MAs test narrative", summary_xml)
         self.assertIn("COA validation test narrative", summary_xml)
+        self.assertIn("DAILY ACTIVITY", summary_xml)
+        self.assertIn("COURSE OF ACTION / VALIDATION", summary_xml)
         self.assertEqual(self._operational_table_counts(), before_counts)
 
     def _operational_table_counts(self) -> dict[str, int]:

@@ -1596,10 +1596,10 @@ class InventoryApp(LoanUiMixin, tk.Tk):
 
         weekly_controls = ttk.Frame(top)
         weekly_controls.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(10, 0))
-        ttk.Button(weekly_controls, text='Monday morning report', command=self._monday_report).grid(row=1, column=0, pady=(8, 0), sticky='w')
+        ttk.Button(weekly_controls, text='Previous Week Report', command=self._monday_report).grid(row=1, column=0, pady=(8, 0), sticky='w')
         ttk.Button(
             weekly_controls,
-            text="Generate Weekly Report",
+            text="Generate Date-Range Report",
             command=self._generate_weekly_report,
         ).grid(row=0, column=0, padx=(0, 10))
         ttk.Label(
@@ -2311,7 +2311,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
                 open_after=True,
             ),
             success_message="Weekly activity report generated and opened.",
-            on_success=lambda path: self._set_status(f"Weekly report saved to {path}"),
+            on_success=lambda path: self._set_status(f"A.C.E. report saved to {path}"),
         )
 
     def _prompt_weekly_report_details(self) -> dict[str, str] | None:
@@ -2323,7 +2323,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         result: dict[str, dict[str, str] | None] = {"value": None}
 
         dialog = tk.Toplevel(self)
-        dialog.title("Weekly Activity Report")
+        dialog.title("A.C.E. Activity Report")
         dialog.transient(self)
         dialog.grab_set()
         dialog.geometry("780x700")
@@ -2338,7 +2338,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         for row_index in (4, 6, 8):
             container.rowconfigure(row_index, weight=1)
 
-        ttk.Label(container, text="Generate Weekly Activity Report", style="Title.TLabel").grid(
+        ttk.Label(container, text="Generate A.C.E. Activity Report", style="Title.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 4)
         )
         ttk.Label(
@@ -2388,10 +2388,10 @@ class InventoryApp(LoanUiMixin, tk.Tk):
                 start_day = date.fromisoformat(start_value)
                 end_day = date.fromisoformat(end_value)
             except ValueError:
-                self._show_error("Weekly report dates must use YYYY-MM-DD format.")
+                self._show_error("Report dates must use YYYY-MM-DD format.")
                 return
             if end_day < start_day:
-                self._show_error("The weekly report end date cannot be before its start date.")
+                self._show_error("The report end date cannot be before its start date.")
                 return
             payload = {
                 "start_date": start_value,
@@ -5696,7 +5696,7 @@ A.C.E. Manual
 - Transaction History shows all checkout, return, permanent-issue, and purchase records.
 - Inventory Changes records new items, quantity increases or decreases, item edits, status changes, and deletions without relying on the current item still existing.
 - Use Today, This Week, or Last 7 Days for quick date ranges. Every report displays readable headings, dates, and a plain-language summary.
-- Export Readable Excel creates a formatted workbook with a Summary sheet, clear headings, filters, frozen headers, and a detailed report sheet.
+- Every Excel report uses the same A.C.E. Executive Summary, BLUF, daily activity, action plan, and formatted detail-sheet design.
 - Export CSV saves the same report with readable headings and timestamps.
 - Export WINGS Spreadsheet creates the same official-stock-only workbook as the WINGS Export tab.
 

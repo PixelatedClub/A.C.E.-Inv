@@ -18,6 +18,7 @@ from .database import EASTER_EGG_ADMINS, EASTER_EGG_CADETS, EASTER_EGG_OUTFIT_HI
 from .deployment import create_transfer_installer, ensure_icon_file
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
 from .image_utils import read_png_dimensions, scaled_dimensions
+from .report_workbook import write_report_workbook
 from .wings_catalog import WINGS_COLUMNS
 
 
@@ -63,6 +64,8 @@ REPORT_COLUMN_LABELS = {
     "closed_by_name": "Closed By",
     "closed_by_role": "Closer Role",
     "condition_notes": "Notes",
+    "loan_due_date": "Loan Due Date",
+    "loan_purpose": "Loan Purpose",
     "quantity_change": "Qty Change",
     "total_before": "Previous Total",
     "total_after": "New Total",
@@ -3603,30 +3606,75 @@ class InventoryService(LoanServiceMixin):
             }
             for row in formatted_rows
         ]
-        date_range = (
-            f"{start_date.strip() or 'Earliest'} through {end_date.strip() or 'Today'}"
+        start_label = start_date.strip() or "Earliest recorded date"
+        end_label = end_date.strip() or date.today().isoformat()
+        period_label = f"{start_label} through {end_label}. Generated {date.today().isoformat()}"
+        cadets = {
+            str(row.get("cadet_email") or row.get("cadet_name") or "").strip().casefold()
+            for row in rows
+            if str(row.get("cadet_email") or row.get("cadet_name") or "").strip()
+        }
+        items = {
+            str(row.get("barcode_id") or "").strip().upper()
+            for row in rows
+            if str(row.get("barcode_id") or "").strip()
+        }
+        units_added = sum(max(0, int(row.get("quantity_change") or 0)) for row in rows)
+        units_removed = sum(max(0, -int(row.get("quantity_change") or 0)) for row in rows)
+        permanent = sum(
+            str(row.get("disposition") or "") in ACQUISITION_DISPOSITIONS for row in rows
         )
-        summary_rows = [
-            {"Report Detail": "Report", "Value": report_name},
-            {"Report Detail": "Date Range", "Value": date_range},
-            {"Report Detail": "Generated", "Value": datetime.now().strftime("%b %d, %Y %I:%M %p").replace(" 0", " ")},
-            {"Report Detail": "Summary", "Value": self.summarize_report(report_name, rows)},
-        ]
-        return self._write_simple_xlsx_workbook(
-            path,
-            workbook_title=f"{self.settings.org_name} {report_name}",
-            sheets=[
-                {
-                    "sheet_name": "Summary",
-                    "columns": ["Report Detail", "Value"],
-                    "rows": summary_rows,
-                },
-                {
-                    "sheet_name": report_name,
-                    "columns": readable_columns,
-                    "rows": readable_rows,
-                },
+        current_loans = self.list_loans()
+        date_fields = ("event_time", "checkout_time", "acquired_time", "closed_time")
+        daily: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            parsed = next(
+                (self._parse_export_timestamp(row.get(field)) for field in date_fields if self._parse_export_timestamp(row.get(field)) is not None),
+                None,
+            )
+            if parsed is None:
+                continue
+            key = parsed.date().isoformat()
+            entry = daily.setdefault(key, {"Date": key, "Records": 0, "Units Added": 0, "Units Removed": 0})
+            entry["Records"] += 1
+            change = int(row.get("quantity_change") or 0)
+            entry["Units Added"] += max(0, change)
+            entry["Units Removed"] += max(0, -change)
+        daily_rows = [daily[key] for key in sorted(daily)][-14:]
+        summary_text = self.summarize_report(report_name, rows)
+        summary = {
+            "metrics": [
+                ("Records", len(rows)), ("Cadets", len(cadets)),
+                ("Inventory items", len(items)), ("Current loans", len(current_loans)),
+                ("Units added", units_added), ("Units removed", units_removed),
+                ("Permanent issues", permanent), ("Overdue loans", sum(bool(row["overdue"]) for row in current_loans)),
             ],
+            "bluf": summary_text,
+            "daily_columns": ["Date", "Records", "Units Added", "Units Removed"],
+            "daily_rows": daily_rows,
+            "daily_totals": {
+                "Records": sum(row["Records"] for row in daily_rows),
+                "Units Added": sum(row["Units Added"] for row in daily_rows),
+                "Units Removed": sum(row["Units Removed"] for row in daily_rows),
+            },
+            "major_activities": (
+                f"1. Generated the {report_name} report for {start_label} through {end_label}.\n"
+                f"2. Included {len(rows)} records across {len(items)} inventory items and {len(cadets)} cadets.\n"
+                f"3. Current loan accountability includes {len(current_loans)} outstanding units."
+            ),
+            "coa_validation": (
+                "Review the detail sheet against source records. Reconcile open items and temporary loans "
+                "with physical returns before making inventory corrections."
+            ),
+            "source_note": "Source: live A.C.E. inventory database. Counts reflect recorded data.",
+        }
+        return write_report_workbook(
+            path,
+            title=f"{self.settings.org_name} {report_name} Report",
+            subtitle=period_label,
+            org_line="Resource Management Flight, Detachment 005",
+            summary=summary,
+            detail_sheets=[{"sheet_name": report_name, "columns": readable_columns, "rows": readable_rows}],
         )
 
     def get_weekly_activity_report_data(
@@ -3697,7 +3745,9 @@ class InventoryService(LoanServiceMixin):
                         transactions.return_time AS closed_time,
                         transactions.return_approved_by_name AS closed_by_name,
                         transactions.return_approved_by_role AS closed_by_role,
-                        transactions.condition_notes
+                        transactions.condition_notes,
+                        transactions.loan_due_date,
+                        transactions.loan_purpose
                     FROM transactions
                     LEFT JOIN items ON items.barcode_id = transactions.barcode_id
                     ORDER BY transactions.checkout_time, transactions.transaction_id
@@ -3853,10 +3903,55 @@ class InventoryService(LoanServiceMixin):
         report_period = f"{report_start.isoformat()} through {report_end.isoformat()}"
         generated_text = datetime.now().strftime("%b %d, %Y %I:%M %p").replace(" 0", " ")
 
+        current_loans = self.list_loans()
+        permanent_issues = sum(
+            row.get("disposition") in ACQUISITION_DISPOSITIONS
+            and in_range(row, "checkout_time")
+            for row in filtered_transactions
+        )
+        overdue_loans = sum(bool(row["overdue"]) for row in current_loans)
+        daily_rows = []
+        current_day = report_start
+        while current_day <= report_end:
+            day_key = current_day.isoformat()
+            day_changes = [row for row in filtered_changes if str(row.get("event_time") or "")[:10] == day_key]
+            daily_rows.append(
+                {
+                    "Date": day_key,
+                    "Units Added": sum(max(0, int(row.get("quantity_change") or 0)) for row in day_changes),
+                    "Units Removed": sum(max(0, -int(row.get("quantity_change") or 0)) for row in day_changes),
+                    "Net Units": sum(int(row.get("quantity_change") or 0) for row in day_changes),
+                    "Checkouts": sum(str(row.get("checkout_time") or "")[:10] == day_key for row in filtered_transactions),
+                    "Returns": sum(str(row.get("closed_time") or "")[:10] == day_key for row in filtered_transactions),
+                    "Fittings": sum(str(row.get("updated_at") or "")[:10] == day_key for row in filtered_fittings),
+                }
+            )
+            current_day += timedelta(days=1)
+        default_bluf = (
+            f"During {report_period}, A.C.E. recorded {routine_units_added + recovered_units} units added "
+            f"and {units_removed} units removed, a net change of {net_units_recorded}. "
+            f"There were {checkout_count} checkout transactions across {len(checkout_cadets)} cadets, "
+            f"including {permanent_issues} permanent issues. Current temporary loans include "
+            f"{len(current_loans)} items, with {overdue_loans} overdue."
+        )
+        default_activities = (
+            f"1. Recorded {len(filtered_changes)} inventory change events and created {len(filtered_items)} catalog rows.\n"
+            f"2. Processed {checkout_count} checkouts and {closed_count} returns or acquisitions.\n"
+            f"3. Added or updated {len(filtered_fittings)} fitting records and created {len(filtered_cadets)} cadet profiles.\n"
+            f"4. Current item-number coverage is {inventory_rows_with_ids} of {identifier_audit['total_rows']} inventory rows."
+        )
+        default_coa = (
+            "Reconcile outstanding loans against physical returns. Follow up on overdue entries and upcoming "
+            "deadlines. Validate local A.C.E. identifiers against official WINGS records when available."
+        )
+        resolved_bluf = bluf.strip() or default_bluf
+        resolved_activities = major_activities.strip() or default_activities
+        resolved_coa = coa_validation.strip() or default_coa
+
         summary_rows = [
-            {"Report Section": "BLUF", "Value": bluf.strip() or "Not provided."},
-            {"Report Section": "MAs", "Value": major_activities.strip() or "Not provided."},
-            {"Report Section": "COA / Validation", "Value": coa_validation.strip() or "Not provided."},
+            {"Report Section": "BLUF", "Value": resolved_bluf},
+            {"Report Section": "MAs", "Value": resolved_activities},
+            {"Report Section": "COA / Validation", "Value": resolved_coa},
             {"Report Section": "Report Period", "Value": report_period},
             {"Report Section": "Generated", "Value": generated_text},
             {"Report Section": "Routine Units Added", "Value": routine_units_added},
@@ -3925,12 +4020,12 @@ class InventoryService(LoanServiceMixin):
 
         sheets = [
             {
-                "sheet_name": "Weekly Summary",
+                "sheet_name": "Executive Summary",
                 "columns": ["Report Section", "Value"],
                 "rows": summary_rows,
             },
             readable_sheet(
-                "Inventory Changes",
+                "Catalog Activity",
                 [
                     "event_time", "activity_class", "action", "item_name", "variant",
                     "quantity_change", "total_before", "total_after", "available_after",
@@ -3948,12 +4043,12 @@ class InventoryService(LoanServiceMixin):
                 filtered_items,
             ),
             readable_sheet(
-                "Transactions",
+                "Checkouts",
                 [
                     "weekly_event", "transaction_id", "checkout_time", "closed_time",
                     "disposition", "cadet_name", "cadet_email", "barcode_id",
                     "wings_item_no", "item_name", "variant", "approved_by_name",
-                    "closed_by_name", "condition_notes",
+                    "closed_by_name", "loan_due_date", "loan_purpose", "condition_notes",
                 ],
                 filtered_transactions,
             ),
@@ -3966,9 +4061,18 @@ class InventoryService(LoanServiceMixin):
                 filtered_fittings,
             ),
             readable_sheet(
-                "New Cadet Records",
+                "Cadet Records",
                 ["created_at", "cadet_id", "full_name", "email", "updated_at"],
                 filtered_cadets,
+            ),
+            readable_sheet(
+                "Current Loans",
+                [
+                    "loan_status", "loan_due_date", "loan_purpose", "cadet_name",
+                    "cadet_email", "item_name", "variant", "barcode_id",
+                    "wings_item_no", "checkout_time", "approved_by_name",
+                ],
+                current_loans,
             ),
             {
                 "sheet_name": "Data Quality",
@@ -3992,6 +4096,35 @@ class InventoryService(LoanServiceMixin):
                 "cadets_fitted": len(fitted_cadets),
                 "new_cadets": len(filtered_cadets),
                 "barcode_repairs": repair_change_count,
+                "permanent_issues": permanent_issues,
+                "current_loans": len(current_loans),
+                "overdue_loans": overdue_loans,
+            },
+            "presentation": {
+                "metrics": [
+                    ("Units added", routine_units_added + recovered_units),
+                    ("Units removed", units_removed),
+                    ("Net units", net_units_recorded),
+                    ("New catalog rows", len(filtered_items)),
+                    ("Checkouts", checkout_count),
+                    ("Cadets checked out", len(checkout_cadets)),
+                    ("Current loans", len(current_loans)),
+                    ("Overdue loans", overdue_loans),
+                ],
+                "bluf": resolved_bluf,
+                "major_activities": resolved_activities,
+                "coa_validation": resolved_coa,
+                "daily_columns": ["Date", "Units Added", "Units Removed", "Net Units", "Checkouts", "Returns", "Fittings"],
+                "daily_rows": daily_rows,
+                "daily_totals": {
+                    "Units Added": sum(row["Units Added"] for row in daily_rows),
+                    "Units Removed": sum(row["Units Removed"] for row in daily_rows),
+                    "Net Units": sum(row["Net Units"] for row in daily_rows),
+                    "Checkouts": sum(row["Checkouts"] for row in daily_rows),
+                    "Returns": sum(row["Returns"] for row in daily_rows),
+                    "Fittings": sum(row["Fittings"] for row in daily_rows),
+                },
+                "source_note": "Source: live A.C.E. inventory database. Counts reflect recorded data.",
             },
             "sheets": sheets,
         }
@@ -4005,6 +4138,7 @@ class InventoryService(LoanServiceMixin):
         major_activities: str = "",
         coa_validation: str = "",
         open_after: bool = True,
+        filename_stem: str = "",
     ) -> Path:
         report = self.get_weekly_activity_report_data(
             start_date=start_date,
@@ -4016,12 +4150,20 @@ class InventoryService(LoanServiceMixin):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         export_dir = self.settings.database_path.parent / "exports"
         export_path = export_dir / (
-            f"ACE_weekly_activity_{report['start_date']}_to_{report['end_date']}_{timestamp}.xlsx"
+            f"{filename_stem.strip()}_{timestamp}.xlsx"
+            if filename_stem.strip()
+            else f"ACE_activity_report_{report['start_date']}_to_{report['end_date']}_{timestamp}.xlsx"
         )
-        self._write_simple_xlsx_workbook(
+        write_report_workbook(
             export_path,
-            workbook_title=f"{self.settings.org_name} Weekly Activity Report",
-            sheets=report["sheets"],
+            title=f"{self.settings.org_name} Inventory Activity Report",
+            subtitle=(
+                f"{report['start_date']} through {report['end_date']}. "
+                f"Generated {date.today().isoformat()}"
+            ),
+            org_line="Resource Management Flight, Detachment 005",
+            summary=report["presentation"],
+            detail_sheets=report["sheets"][1:],
         )
         if open_after:
             open_file(export_path)

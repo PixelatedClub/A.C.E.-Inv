@@ -19,7 +19,7 @@ class LoanUiMixin:
         controls.grid(row=2,column=0,sticky='ew',pady=10)
         entry=ttk.Entry(controls,textvariable=self.loan_search,width=30)
         entry.pack(side='left'); entry.bind('<KeyRelease>',lambda e:self.refresh_loans())
-        for label,command in [('Change due date...',self._change_loan_date),('Return items...',self._return_loan_cadet),('Monday report',self._monday_report),('Refresh',self.refresh_loans)]:
+        for label,command in [('Change due date...',self._change_loan_date),('Return items...',self._return_loan_cadet),('Previous week report',self._monday_report),('Refresh',self.refresh_loans)]:
             ttk.Button(controls,text=label,command=command).pack(side='left',padx=4)
         ttk.Checkbutton(controls,text='Include closed',variable=self.loan_show_closed,command=self.refresh_loans).pack(side='left')
         frame=ttk.Frame(self.loans_tab); frame.grid(row=3,column=0,sticky='nsew')
@@ -179,7 +179,7 @@ class LoanUiMixin:
         self._load_return_cadet_details(cadet_id)
 
     def _monday_report(self):
-        self._run_action(self.service.export_monday_report,success_message='Monday report generated.',on_success=open_file)
+        self._run_action(self.service.export_monday_report,success_message='Previous-week A.C.E. report generated.',on_success=open_file)
 
     def _check_loan_reminders(self):
         try:
