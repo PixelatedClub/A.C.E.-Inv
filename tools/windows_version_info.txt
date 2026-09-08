@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Team Shapes'),
           StringStruct('FileDescription', 'A.C.E. Inventory System'),
-          StringStruct('FileVersion', '1.7.5.0'),
+          StringStruct('FileVersion', '1.7.6.0'),
           StringStruct('InternalName', 'A.C.E.'),
           StringStruct('LegalCopyright', 'Copyright (c) 2026 Team Shapes'),
           StringStruct('OriginalFilename', 'A.C.E.exe'),
           StringStruct('ProductName', 'A.C.E. Inventory System'),
-          StringStruct('ProductVersion', '1.7.5'),
+          StringStruct('ProductVersion', '1.7.6'),
           StringStruct('Comments', 'Developed and published under the Team Shapes brand.')
         ]
       )

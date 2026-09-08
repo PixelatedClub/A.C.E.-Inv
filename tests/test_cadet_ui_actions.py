@@ -14,6 +14,9 @@ class _Value:
     def get(self) -> str:
         return self.value
 
+    def set(self, value: str) -> None:
+        self.value = value
+
 
 def _run_action(action, *, success_message, on_success):
     result = action()
@@ -35,6 +38,12 @@ class CadetUiActionTests(unittest.TestCase):
                 }
             },
             cadet_form_email_var=_Value("lzj0066@auburn.edu"),
+            cadet_search_var=_Value("Dawkins"),
+            cadet_tree=SimpleNamespace(
+                get_children=Mock(return_value=("25",)),
+                selection_set=Mock(),
+                see=Mock(),
+            ),
             service=service,
             _compose_cadet_form_name=Mock(return_value="Johnson, A, Luke"),
             _run_action=_run_action,
@@ -55,6 +64,8 @@ class CadetUiActionTests(unittest.TestCase):
         )
         app.service.update_cadet.assert_not_called()
         self.assertEqual(app.selected_cadet_id, 25)
+        self.assertEqual(app.cadet_search_var.get(), "")
+        app.cadet_tree.selection_set.assert_called_once_with("25")
 
     def test_update_requires_a_selected_cadet(self) -> None:
         app = self._app()

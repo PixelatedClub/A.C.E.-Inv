@@ -549,7 +549,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         )
         self.generator_quick_find_entry.grid(row=0, column=1, sticky="ew", pady=3)
         self.generator_quick_find_entry.bind("<KeyRelease>", self._filter_quick_find)
-        self.generator_quick_find_entry.bind("<Return>", self._apply_quick_find_result)
+        self.generator_quick_find_entry.bind("<Return>", self._search_and_apply_quick_find_result)
         self.generator_quick_find_entry.bind("<Down>", self._focus_quick_find_results)
         ttk.Label(
             config_frame,
@@ -3650,10 +3650,16 @@ class InventoryApp(LoanUiMixin, tk.Tk):
 
     def _save_cadet(self) -> None:
         def on_success(cadet: dict[str, Any]) -> None:
-            self.selected_cadet_id = int(cadet["cadet_id"])
+            saved_cadet_id = int(cadet["cadet_id"])
+            self.cadet_search_var.set("")
+            self.selected_cadet_id = saved_cadet_id
             self.refresh_cadets()
             self.refresh_cadet_fitting_index()
-            self._load_cadet_details(self.selected_cadet_id)
+            self.selected_cadet_id = saved_cadet_id
+            if str(saved_cadet_id) in self.cadet_tree.get_children():
+                self.cadet_tree.selection_set(str(saved_cadet_id))
+                self.cadet_tree.see(str(saved_cadet_id))
+            self._load_cadet_details(saved_cadet_id)
 
         self._run_action(
             lambda: self.service.save_cadet(
@@ -4081,6 +4087,19 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         for label, _payload in results:
             self.generator_quick_find_results.insert(tk.END, label)
 
+    def _search_and_apply_quick_find_result(self, _event: tk.Event | None = None) -> str:
+        query = self.generator_quick_find_var.get().strip()
+        results = self._quick_find_matches(query)
+        self.quick_find_result_map = {label: payload for label, payload in results}
+        self.generator_quick_find_results.delete(0, tk.END)
+        for label, _payload in results:
+            self.generator_quick_find_results.insert(tk.END, label)
+        if results:
+            self.generator_quick_find_results.selection_set(0)
+            self.generator_quick_find_results.activate(0)
+        self._apply_quick_find_result()
+        return "break"
+
     def _focus_quick_find_results(self, _event: tk.Event | None = None) -> str:
         if self.generator_quick_find_results.size():
             self.generator_quick_find_results.selection_clear(0, tk.END)
@@ -4100,18 +4119,19 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             payload = None
         if payload is None:
             return
-        category, item_name, official_name, requested_size, wings_item_no = payload
+        category, item_name, official_name, requested_size, wings_item_no, item_type = payload
         self.generator_quick_find_var.set(official_name)
         self.generator_wings_item_no_var.set(wings_item_no)
         self.generator_category_var.set(category)
         self.generator_item_name_var.set(item_name)
+        self.generator_item_type_var.set(item_type)
         self.generator_selected_item_var.set(official_name)
         self.generator_size_label_var.set("WINGS Size")
         self.generator_size_combo["values"] = [requested_size]
         self.generator_variant_var.set(requested_size)
         self._set_status(f"Selected WINGS item {wings_item_no}. Enter the quantity to add.")
 
-    def _quick_find_matches(self, query: str) -> list[tuple[str, tuple[str, str, str, str, str]]]:
+    def _quick_find_matches(self, query: str) -> list[tuple[str, tuple[str, str, str, str, str, str]]]:
         query_text = " ".join(
             query.casefold().replace("’", "'").replace("'s", "").replace("_", " ").split()
         )
@@ -4139,6 +4159,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
                         official_name,
                         catalog_size,
                         str(row["item_no"]),
+                        str(row["subcategory"] or ""),
                     ),
                 )
             )

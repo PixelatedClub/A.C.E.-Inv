@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.7.6 - 2026-09-08
+
+- Fixed Save New Cadet after using Cadets search by clearing the stale filter and selecting the saved profile.
+- Fixed Barcode Generator Enter searches so they rebuild results from the current query instead of reusing an older selection.
+- Fixed Quick Find selections so item type/subcategory always comes from the newly selected WINGS catalog row.
+
 ## 1.7.5 - 2026-09-08
 
 - Removed the obsolete standalone Barcode Directory tab.
