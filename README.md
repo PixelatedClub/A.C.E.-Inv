@@ -4,13 +4,13 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.7.4 (September 8, 2026)**
+**Current source version: 1.7.5 (September 8, 2026)**
 
 Checkout can issue the current queued barcodes as either a normal checkout or a temporary loan. Loan Queued Items asks for a custom return date or offers two-, three-, and four-week presets. Checkout > Temporary Loans shows due dates and overdue status; opening the app and hourly checks while it remains open remind the signed-in administrator about overdue items. Reminders require A.C.E. to be running. Returns and permanent dispositions close the original checkout and remove it from outstanding reminders.
 
 Every report now uses the same polished Excel format: an Executive Summary with BLUF, key metrics, daily activity, major activities, and course of action / validation, followed by readable detail sheets. The Previous Week Report automatically selects the prior Monday-Sunday; Date-Range Report uses the dates you choose. Reports are generated on demand; no email is sent automatically.
 
-The compact Items workspace displays selected-item details, separate stock action notes, manual creation in its own dialog, and single-label printing.
+The consolidated Items workspace displays every barcode with category and item type, selected-item details, stock controls, editing, printing, clipboard copying, manual creation, and WINGS export tools.
 
 ## Download A.C.E.
 

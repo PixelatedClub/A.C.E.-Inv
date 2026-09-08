@@ -159,7 +159,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.report_columns: list[str] = []
         self.report_rows: list[dict[str, Any]] = []
         self.item_cache: dict[str, dict[str, Any]] = {}
-        self.barcode_directory_cache: dict[str, dict[str, Any]] = {}
         self.cadet_cache: dict[int, dict[str, Any]] = {}
         self.admin_cache: dict[str, dict[str, Any]] = {}
         self.label_print_quantity_cache: dict[str, int] = {}
@@ -336,6 +335,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.item_type_var = tk.StringVar()
         self.item_quantity_var = tk.StringVar(value="1")
         self.item_form_status_var = tk.StringVar(value="Status: New item")
+        self.item_list_summary_var = tk.StringVar(value="Inventory items not loaded yet.")
 
         self.generator_category_var = tk.StringVar(value="OCP")
         self.generator_quick_find_var = tk.StringVar(value="")
@@ -366,10 +366,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.label_status_filter_var = tk.StringVar(value="All")
         self.label_selected_copies_var = tk.StringVar(value="1")
         self.label_library_summary_var = tk.StringVar(value="Label library not loaded yet.")
-
-        self.directory_search_var = tk.StringVar()
-        self.directory_status_filter_var = tk.StringVar(value="All")
-        self.barcode_directory_summary_var = tk.StringVar(value="Barcode directory not loaded yet.")
 
         self.checkout_scan_var = tk.StringVar()
         self.checkout_last_name_var = tk.StringVar()
@@ -445,7 +441,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.wings_export_tab = ttk.Frame(self.notebook, padding=12)
         self.checkout_tab = ttk.Frame(self.notebook, padding=12)
         self.returns_tab = ttk.Frame(self.notebook, padding=12)
-        self.barcode_directory_tab = ttk.Frame(self.notebook, padding=12)
         self.cadets_tab = ttk.Frame(self.notebook, padding=12)
         self.cadet_fitting_tab = ttk.Frame(self.notebook, padding=12)
         self.reports_tab = ttk.Frame(self.notebook, padding=12)
@@ -458,7 +453,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.notebook.add(self.wings_export_tab, text="WINGS Export")
         self.notebook.add(self.checkout_tab, text="Checkout")
         self.notebook.add(self.returns_tab, text="Returns")
-        self.notebook.add(self.barcode_directory_tab, text="Barcode Directory")
         self.notebook.add(self.cadets_tab, text="Cadets")
         self.notebook.add(self.cadet_fitting_tab, text="Cadet Fitting Index")
         self.notebook.add(self.reports_tab, text="Reports")
@@ -472,7 +466,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self._build_checkout_tab()
         self._build_returns_tab()
         self._build_loans_tab()
-        self._build_barcode_directory_tab()
         self._build_cadets_tab()
         self._build_cadet_fitting_tab()
         self._build_reports_tab()
@@ -1136,68 +1129,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             row=0, column=1, sticky="ew", padx=(4, 0)
         )
 
-    def _build_barcode_directory_tab(self) -> None:
-        self.barcode_directory_tab.columnconfigure(0, weight=1)
-        self.barcode_directory_tab.rowconfigure(1, weight=1)
-
-        controls = ttk.Frame(self.barcode_directory_tab)
-        controls.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        controls.columnconfigure(1, weight=1)
-
-        ttk.Label(controls, text="Search").grid(row=0, column=0, sticky="w")
-        directory_search_entry = ttk.Entry(controls, textvariable=self.directory_search_var)
-        directory_search_entry.grid(row=0, column=1, sticky="ew", padx=(6, 10))
-        directory_search_entry.bind("<Return>", lambda _event: self.refresh_barcode_directory())
-
-        ttk.Label(controls, text="Status").grid(row=0, column=2, sticky="w")
-        directory_status_combo = ttk.Combobox(
-            controls,
-            textvariable=self.directory_status_filter_var,
-            state="readonly",
-            values=["All", "Available", "Checked Out", "Retired", "Lost"],
-            width=16,
-        )
-        directory_status_combo.grid(row=0, column=3, sticky="w", padx=(6, 10))
-        directory_status_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_barcode_directory())
-
-        ttk.Button(controls, text="Refresh", command=self.refresh_barcode_directory).grid(row=0, column=4, padx=(0, 6))
-        ttk.Button(controls, text="Copy Selected Barcode(s)", command=self._copy_selected_directory_barcodes).grid(
-            row=0, column=5, padx=(0, 6)
-        )
-        ttk.Button(controls, text="Copy All Visible", command=self._copy_all_visible_directory_barcodes).grid(
-            row=0, column=6, padx=(0, 6)
-        )
-        ttk.Button(controls, text="Export WINGS Spreadsheet", command=self._export_inventory_spreadsheet).grid(
-            row=0, column=7
-        )
-
-        tree_frame = ttk.LabelFrame(self.barcode_directory_tab, text="All Current Barcode IDs", padding=10)
-        tree_frame.grid(row=1, column=0, sticky="nsew")
-        tree_frame.columnconfigure(0, weight=1)
-        tree_frame.rowconfigure(0, weight=1)
-        self.barcode_directory_tree = self._create_tree(
-            tree_frame,
-            columns=[
-                "barcode_id",
-                "item_name",
-                "category",
-                "variant",
-                "item_type",
-                "status",
-                "total_quantity",
-                "available_quantity",
-            ],
-            selectmode="extended",
-        )
-        self.barcode_directory_tree.grid(row=0, column=0, sticky="nsew")
-
-        ttk.Label(
-            self.barcode_directory_tab,
-            textvariable=self.barcode_directory_summary_var,
-            wraplength=1180,
-            justify="left",
-        ).grid(row=2, column=0, sticky="w", pady=(8, 0))
-
     def _build_cadets_tab(self) -> None:
         self.cadets_tab.columnconfigure(0, weight=1)
         self.cadets_tab.columnconfigure(1, weight=2)
@@ -1773,7 +1704,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.refresh_label_library()
         self.refresh_index()
         self.refresh_wings_export()
-        self.refresh_barcode_directory()
         self.refresh_cadets()
         self.refresh_cadet_fitting_index()
         self.refresh_return_cadets()
@@ -2194,12 +2124,17 @@ class InventoryApp(LoanUiMixin, tk.Tk):
                 "barcode_id",
                 "wings_item_no",
                 "item_name",
+                "category",
                 "variant",
+                "item_type",
                 "status",
                 "total_quantity",
                 "available_quantity",
             ],
             rows,
+        )
+        self.item_list_summary_var.set(
+            f"Showing {len(rows)} barcode line(s). Select rows to copy barcodes or manage the first selected item."
         )
 
     def refresh_report(self) -> None:
@@ -2464,30 +2399,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             self.label_library_summary_var.set(
                 f"Showing {rows} label record(s). Set print copies, select specific rows, or export the full filtered sheet from {self.settings.label_dir}."
             )
-
-    def refresh_barcode_directory(self) -> None:
-        rows = self.service.list_items(
-            search=self.directory_search_var.get(),
-            status_filter=self.directory_status_filter_var.get(),
-        )
-        self.barcode_directory_cache = {str(row["barcode_id"]).upper(): row for row in rows}
-        self._populate_tree(
-            self.barcode_directory_tree,
-            [
-                "barcode_id",
-                "item_name",
-                "category",
-                "variant",
-                "item_type",
-                "status",
-                "total_quantity",
-                "available_quantity",
-            ],
-            rows,
-        )
-        self.barcode_directory_summary_var.set(
-            f"Showing {len(rows)} barcode line(s). Select rows to copy barcodes for manual checkout or return entry."
-        )
 
     def _selected_label_quantity_map(self) -> dict[str, int]:
         return {
@@ -5377,16 +5288,16 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             on_success=on_success,
         )
 
-    def _copy_selected_directory_barcodes(self) -> None:
-        selected_ids = [str(item_id) for item_id in self.barcode_directory_tree.selection() if item_id]
+    def _copy_selected_item_barcodes(self) -> None:
+        selected_ids = [str(item_id) for item_id in self.items_tree.selection() if item_id]
         if not selected_ids:
-            self._show_error("Select one or more barcode rows in the barcode directory first.")
+            self._show_error("Select one or more barcode rows in Items first.")
             return
         self._copy_text_to_clipboard("\n".join(selected_ids))
         self._show_info(f"Copied {len(selected_ids)} barcode(s) to the clipboard.")
 
-    def _copy_all_visible_directory_barcodes(self) -> None:
-        visible_ids = [str(item_id) for item_id in self.barcode_directory_tree.get_children()]
+    def _copy_all_visible_item_barcodes(self) -> None:
+        visible_ids = [str(item_id) for item_id in self.items_tree.get_children()]
         if not visible_ids:
             self._show_error("There are no visible barcode rows to copy.")
             return
@@ -5600,9 +5511,12 @@ A.C.E. Manual
 - Recent Activity lists the newest checkout and return events.
 
 2. Items Tab
-- Create Manual Item adds a barcode record directly.
-- Edit Selected Barcode changes the selected item's description, classification, notes, or total quantity without replacing its barcode.
-- Restock Barcode increases quantity for an existing barcode.
+- Search and status filters show every current barcode with its WINGS/local number, category, type, quantities, and status.
+- Select multiple rows to copy specific barcode IDs, or copy every visible filtered barcode.
+- New Manual Barcode adds a barcode record directly, and Export WINGS opens the standard inventory export.
+- Edit Details changes the selected item's description, classification, notes, or total quantity without replacing its barcode.
+- Add Quantity increases stock for an existing barcode.
+- Print One Label generates a label for the selected barcode.
 - Set Available, Mark Lost, and Retire update status.
 - Delete Permanently removes the barcode and its checkout history from the program.
 
@@ -5667,12 +5581,7 @@ A.C.E. Manual
 - Return Selected Items closes only those exact checkout records for the named cadet.
 - Returns record condition notes and the approving administrator in cadet history and reports.
 
-8. Barcode Directory
-- Shows every barcode currently in the system in one place.
-- Search or filter the list, then copy selected or all visible barcodes to the clipboard.
-- Use this tab when the scanner is unavailable and you need to paste barcodes manually.
-
-9. Cadets Tab
+8. Cadets Tab
 - Save cadets manually or let checkout save them.
 - Search by name or email.
 - Select a cadet to see currently checked-out items and full transaction history.
@@ -5683,14 +5592,14 @@ A.C.E. Manual
 - Delete Cadet removes the saved cadet record while preserving all checkout history snapshots.
 - Load Into Checkout copies that cadet into the checkout screen.
 
-10. Cadet Fitting Index
+9. Cadet Fitting Index
 - Select a saved cadet, then filter the equipment catalog by category or search by item name, size, sex, or WINGS/local item number.
 - The catalog shows every known size and the current total and available quantities. A zero-stock size can still be recorded for planning.
 - Select an equipment row to fill its official description, size, category, and item number into the cadet profile form.
 - Use Item / Measurement for free-form entries such as height, weight, or an item that is not in the catalog.
 - Saved fitting entries can be selected, changed, or deleted without affecting inventory quantities.
 
-11. Reports
+10. Reports
 - Checked Out Items shows open issues.
 - Acquired / Purchased Items shows every permanent issue or purchase with the cadet, item, date, approver, and notes.
 - Transaction History shows all checkout, return, permanent-issue, and purchase records.
@@ -5860,7 +5769,6 @@ A.C.E. Manual
                     tree is self.items_tree
                     or tree is getattr(self, "label_library_tree", None)
                     or tree is getattr(self, "generator_tree", None)
-                    or tree is getattr(self, "barcode_directory_tree", None)
                     or tree is getattr(self, "checkout_queue_tree", None)
                 )
             ):

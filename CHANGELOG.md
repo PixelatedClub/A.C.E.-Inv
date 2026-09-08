@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.7.5 - 2026-09-08
+
+- Removed the obsolete standalone Barcode Directory tab.
+- Moved barcode copying, visible-list copying, category and item-type columns, and WINGS export access into Items.
+- Enabled multi-row selection in Items while retaining first-selected item management.
+
 ## 1.7.4 - 2026-09-08
 
 - Added Convert to Standard Checkout in the Temporary Loans menu.
