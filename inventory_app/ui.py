@@ -909,7 +909,15 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.checkout_tab.columnconfigure(0, weight=1)
         self.checkout_tab.rowconfigure(0, weight=1)
 
-        checkout_frame = ttk.LabelFrame(self.checkout_tab, text="Checkout Items To A Cadet", padding=12)
+        self.checkout_notebook = ttk.Notebook(self.checkout_tab)
+        self.checkout_notebook.grid(row=0, column=0, sticky="nsew")
+
+        self.standard_checkout_tab = ttk.Frame(self.checkout_notebook, padding=8)
+        self.standard_checkout_tab.columnconfigure(0, weight=1)
+        self.standard_checkout_tab.rowconfigure(0, weight=1)
+        self.checkout_notebook.add(self.standard_checkout_tab, text="Standard Checkout")
+
+        checkout_frame = ttk.LabelFrame(self.standard_checkout_tab, text="Checkout Items To A Cadet", padding=12)
         checkout_frame.grid(row=0, column=0, sticky="nsew")
         checkout_frame.columnconfigure(0, weight=1)
         checkout_frame.rowconfigure(3, weight=1)

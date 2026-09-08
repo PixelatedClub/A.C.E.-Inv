@@ -6,8 +6,8 @@ from .barcode_utils import extract_scanned_barcode, open_file
 
 class LoanUiMixin:
     def _build_loans_tab(self):
-        self.loans_tab = ttk.Frame(self.notebook, padding=12)
-        self.notebook.insert(self.returns_tab, self.loans_tab, text='Loans')
+        self.loans_tab = ttk.Frame(self.checkout_notebook, padding=12)
+        self.checkout_notebook.add(self.loans_tab, text='Temporary Loans')
         self.loans_tab.columnconfigure(0, weight=1)
         self.loans_tab.rowconfigure(3, weight=1)
         self.loan_search = tk.StringVar()
@@ -29,6 +29,11 @@ class LoanUiMixin:
         self.loan_tree.grid(row=0,column=0,sticky='nsew')
         self.loan_tree.tag_configure('overdue',background='#ffe2e2')
         ttk.Label(self.loans_tab,textvariable=self.loan_summary).grid(row=4,column=0,sticky='w',pady=8)
+        self.checkout_notebook.bind('<<NotebookTabChanged>>', self._on_checkout_workflow_changed, add='+')
+
+    def _on_checkout_workflow_changed(self, _event=None):
+        if self.checkout_notebook.select() == str(self.loans_tab):
+            self.refresh_loans()
 
     def refresh_loans(self):
         if not hasattr(self,'loan_tree'):
@@ -74,7 +79,7 @@ class LoanUiMixin:
         def redraw():
             listbox.delete(0,'end')
             for barcode,line in queue.items():
-                listbox.insert('end',f"{barcode} — {line['name']} — {line['quantity']} units")
+                listbox.insert('end',f"{barcode} - {line['name']} - {line['quantity']} units")
         def add():
             try:
                 barcode=stock_map.get(selected.get()) or extract_scanned_barcode(selected.get())
@@ -135,6 +140,6 @@ class LoanUiMixin:
                 self.refresh_loans()
                 if overdue:
                     names=sorted(set(r['cadet_name'] for r in overdue))
-                    self._show_info(f"Loan reminder: {len(overdue)} overdue unit(s) across {len(names)} cadets.\n\n"+'\n'.join(names)+'\n\nOpen Loans to review and Returns to record returns.')
+                    self._show_info(f"Loan reminder: {len(overdue)} overdue unit(s) across {len(names)} cadets.\n\n"+'\n'.join(names)+'\n\nOpen Checkout > Temporary Loans to review and Returns to record returns.')
         finally:
             self.after(3600000,self._check_loan_reminders)

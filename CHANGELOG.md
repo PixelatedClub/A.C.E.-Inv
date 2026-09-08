@@ -1,5 +1,9 @@
 # A.C.E. Changelog
 
+## 1.7.1 - 2026-09-08
+
+- Moved temporary-loan management inside the Checkout tab.
+
 ## 1.7.0 - 2026-09-08
 
 - Added temporary-loan checkout, custom deadlines, two-/three-/four-week presets, due-date editing, and overdue status.
