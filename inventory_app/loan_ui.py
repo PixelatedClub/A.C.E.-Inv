@@ -19,7 +19,7 @@ class LoanUiMixin:
         controls.grid(row=2,column=0,sticky='ew',pady=10)
         entry=ttk.Entry(controls,textvariable=self.loan_search,width=30)
         entry.pack(side='left'); entry.bind('<KeyRelease>',lambda e:self.refresh_loans())
-        for label,command in [('Change due date...',self._change_loan_date),('Return items...',self._return_loan_cadet),('Previous week report',self._monday_report),('Refresh',self.refresh_loans)]:
+        for label,command in [('Change due date...',self._change_loan_date),('Convert to standard checkout',self._convert_loan_to_checkout),('Return items...',self._return_loan_cadet),('Previous week report',self._monday_report),('Refresh',self.refresh_loans)]:
             ttk.Button(controls,text=label,command=command).pack(side='left',padx=4)
         ttk.Checkbutton(controls,text='Include closed',variable=self.loan_show_closed,command=self.refresh_loans).pack(side='left')
         frame=ttk.Frame(self.loans_tab); frame.grid(row=3,column=0,sticky='nsew')
@@ -177,6 +177,24 @@ class LoanUiMixin:
         self.notebook.select(self.returns_tab)
         self.selected_return_cadet_id=cadet_id
         self._load_return_cadet_details(cadet_id)
+
+    def _convert_loan_to_checkout(self):
+        ids = [int(value) for value in self.loan_tree.selection()]
+        if not ids:
+            self._show_error('Select one or more active loans first.')
+            return
+        if not messagebox.askyesno(
+            'Convert to standard checkout',
+            'Remove the loan deadline from the selected item(s)?\n\n'
+            'The items will remain checked out to the same cadet and inventory quantities will not change.',
+            parent=self,
+        ):
+            return
+        self._run_action(
+            lambda: self.service.convert_loans_to_standard_checkout(ids, self.current_admin),
+            success_message='Selected loan items are now standard checkouts.',
+            on_success=lambda _result: self.refresh_all_views(),
+        )
 
     def _monday_report(self):
         self._run_action(self.service.export_monday_report,success_message='Previous-week A.C.E. report generated.',on_success=open_file)

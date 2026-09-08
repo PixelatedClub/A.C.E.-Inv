@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.7.4 - 2026-09-08
+
+- Added Convert to Standard Checkout in the Temporary Loans menu.
+- Conversion preserves the cadet assignment, original checkout, and inventory quantities while removing the deadline and loan purpose.
+- Added an audit event for every loan converted to a standard checkout.
+
 ## 1.7.3 - 2026-09-08
 
 - Unified previous-week, date-range, and individual report exports under one polished Excel report design.

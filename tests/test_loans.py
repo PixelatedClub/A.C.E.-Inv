@@ -48,6 +48,36 @@ class LoanTests(unittest.TestCase):
             self.service.set_loan_deadline(ids,str(date.today()+timedelta(days=28)),'Extend',ADMIN)
         self.assertEqual(self.service.list_loans()[0]['loan_due_date'],old_due)
 
+    def test_active_loan_can_be_converted_to_standard_checkout(self):
+        due = date.today() + timedelta(days=21)
+        self.issue(quantity=1, loan_due_date=str(due), loan_purpose='Game day flags')
+        loan = self.service.list_loans()[0]
+        before = self.service.get_item(self.item['barcode_id'])
+
+        converted = self.service.convert_loans_to_standard_checkout(
+            [loan['transaction_id']],
+            ADMIN,
+        )
+
+        self.assertEqual(converted, 1)
+        self.assertEqual(self.service.list_loans(), [])
+        self.assertEqual(self.service.get_item(self.item['barcode_id']), before)
+        with self.service.database.connect() as connection:
+            transaction = connection.execute(
+                'SELECT return_time, disposition, loan_due_date, loan_purpose FROM transactions WHERE transaction_id=?',
+                (loan['transaction_id'],),
+            ).fetchone()
+            event = connection.execute(
+                'SELECT action, details FROM loan_events WHERE transaction_id=? ORDER BY event_id DESC LIMIT 1',
+                (loan['transaction_id'],),
+            ).fetchone()
+        self.assertIsNone(transaction['return_time'])
+        self.assertEqual(transaction['disposition'], '')
+        self.assertEqual(transaction['loan_due_date'], '')
+        self.assertEqual(transaction['loan_purpose'], '')
+        self.assertEqual(event['action'], 'Converted to standard checkout')
+        self.assertIn(str(due), event['details'])
+
     def test_invalid_date_or_stock_is_atomic(self):
         for due in ('bad','2026-02-30',str(date.today()-timedelta(days=1))):
             with self.assertRaises(InventoryError):self.issue(loan_due_date=due)

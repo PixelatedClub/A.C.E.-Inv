@@ -66,6 +66,51 @@ class LoanServiceMixin:
         self.database.note_write()
         return len(ids)
 
+    def convert_loans_to_standard_checkout(self, transaction_ids, approved_by):
+        """Remove loan deadlines while preserving the original open checkout records."""
+        from .services import InventoryError
+
+        actor = self._normalize_admin_identity(approved_by)['label']
+        ids = sorted(set(int(value) for value in transaction_ids))
+        if not ids:
+            raise InventoryError('Select at least one active loan.')
+
+        with self.database.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            rows = []
+            for transaction_id in ids:
+                row = connection.execute(
+                    'SELECT * FROM transactions WHERE transaction_id=?',
+                    (transaction_id,),
+                ).fetchone()
+                if row is None or row['return_time'] is not None:
+                    raise InventoryError(f'Loan {transaction_id} is closed or no longer exists.')
+                if not str(row['loan_due_date'] or '').strip():
+                    raise InventoryError(f'Checkout {transaction_id} is not an active loan.')
+                rows.append(row)
+
+            for row in rows:
+                old_due = str(row['loan_due_date'] or '').strip()
+                old_purpose = str(row['loan_purpose'] or '').strip()
+                connection.execute(
+                    "UPDATE transactions SET loan_due_date='', loan_purpose='' WHERE transaction_id=?",
+                    (row['transaction_id'],),
+                )
+                details = f'Previous due: {old_due}'
+                if old_purpose:
+                    details += f'; previous purpose: {old_purpose}'
+                self._loan_event(
+                    connection,
+                    row['transaction_id'],
+                    'Converted to standard checkout',
+                    details,
+                    actor,
+                )
+            connection.commit()
+
+        self.database.note_write()
+        return len(rows)
+
     def merge_cadet_profiles(self, keep_id, duplicate_id, approved_by):
         from .services import InventoryError
         actor = self._normalize_admin_identity(approved_by)['label']
