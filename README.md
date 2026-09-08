@@ -4,9 +4,9 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.7.1 (September 8, 2026)**
+**Current source version: 1.7.2 (September 8, 2026)**
 
-Checkout > Temporary Loans issues temporary loans with a custom return date or two-, three-, and four-week presets. Outstanding loans show their due date and overdue status; opening the app and hourly checks while it remains open remind the signed-in administrator about overdue items. Reminders require A.C.E. to be running. Returns and permanent dispositions close the original checkout and remove it from outstanding reminders.
+Checkout can issue the current queued barcodes as either a normal checkout or a temporary loan. Loan Queued Items asks for a custom return date or offers two-, three-, and four-week presets. Checkout > Temporary Loans shows due dates and overdue status; opening the app and hourly checks while it remains open remind the signed-in administrator about overdue items. Reminders require A.C.E. to be running. Returns and permanent dispositions close the original checkout and remove it from outstanding reminders.
 
 The Monday morning report button in Loans and Reports creates a printable HTML report for the previous Monday–Sunday, with current loan status clearly dated. Reports are generated on demand; no email is sent automatically.
 

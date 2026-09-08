@@ -19,7 +19,7 @@ class LoanUiMixin:
         controls.grid(row=2,column=0,sticky='ew',pady=10)
         entry=ttk.Entry(controls,textvariable=self.loan_search,width=30)
         entry.pack(side='left'); entry.bind('<KeyRelease>',lambda e:self.refresh_loans())
-        for label,command in [('New loan...',self._new_loan_dialog),('Change due date...',self._change_loan_date),('Return items...',self._return_loan_cadet),('Monday report',self._monday_report),('Refresh',self.refresh_loans)]:
+        for label,command in [('Change due date...',self._change_loan_date),('Return items...',self._return_loan_cadet),('Monday report',self._monday_report),('Refresh',self.refresh_loans)]:
             ttk.Button(controls,text=label,command=command).pack(side='left',padx=4)
         ttk.Checkbutton(controls,text='Include closed',variable=self.loan_show_closed,command=self.refresh_loans).pack(side='left')
         frame=ttk.Frame(self.loans_tab); frame.grid(row=3,column=0,sticky='nsew')
@@ -56,6 +56,54 @@ class LoanUiMixin:
         for weeks in (2,3,4):
             ttk.Button(presets,text=f'{weeks} weeks',command=lambda w=weeks:due.set(str(date.today()+timedelta(weeks=w)))).pack(side='left',padx=3)
         return due
+
+    def _submit_checkout_as_loan(self):
+        if not self.checkout_queue:
+            self._show_error('Scan or paste at least one barcode into the checkout list first.')
+            return
+
+        window=tk.Toplevel(self);window.title('Loan queued items');window.transient(self);window.grab_set()
+        form=ttk.Frame(window,padding=16);form.pack(fill='both',expand=True);form.columnconfigure(1,weight=1)
+        cadet_name=self._compose_checkout_name()
+        cadet_email=self.checkout_email_var.get().strip()
+        queued_units=sum(int(row['quantity']) for row in self.checkout_queue.values())
+        ttk.Label(form,text='Cadet').grid(row=0,column=0,sticky='w',pady=(0,6))
+        ttk.Label(form,text=f'{cadet_name} | {cadet_email}',style='Accent.TLabel').grid(row=0,column=1,sticky='w',pady=(0,6))
+        ttk.Label(form,text='Queued items').grid(row=1,column=0,sticky='w',pady=(0,6))
+        ttk.Label(form,text=f'{queued_units} unit(s) across {len(self.checkout_queue)} barcode line(s)').grid(row=1,column=1,sticky='w',pady=(0,6))
+        due=self._loan_date_controls(form,2)
+        purpose=tk.StringVar(window,value='Game day flags')
+        ttk.Label(form,text='Loan purpose').grid(row=4,column=0,sticky='w',pady=8)
+        ttk.Entry(form,textvariable=purpose,width=48).grid(row=4,column=1,sticky='ew',pady=8)
+
+        def issue():
+            deadline=due.get()
+            purpose_text=purpose.get()
+            line_items=[
+                {'barcode_id':row['barcode_id'],'quantity':row['quantity']}
+                for row in self.checkout_queue.values()
+            ]
+            def saved(processed_items):
+                total=sum(int(row['quantity']) for row in processed_items)
+                window.destroy();self.refresh_all_views();self._clear_checkout_form(clear_identity=False)
+                self._show_info(f'Loaned {total} unit(s) with return deadline {deadline}.')
+            self._run_action(
+                lambda:self.service.checkout_items_bulk(
+                    line_items=line_items,
+                    cadet_name=cadet_name,
+                    cadet_email=cadet_email,
+                    approved_by=self.current_admin,
+                    condition_notes=self._get_text(self.checkout_notes_text),
+                    loan_due_date=deadline,
+                    loan_purpose=purpose_text,
+                ),
+                success_message=None,
+                on_success=saved,
+            )
+
+        actions=ttk.Frame(form);actions.grid(row=5,column=0,columnspan=2,sticky='e',pady=(10,0))
+        ttk.Button(actions,text='Cancel',command=window.destroy).pack(side='left',padx=(0,6))
+        ttk.Button(actions,text='Loan Queued Items',command=issue).pack(side='left')
 
     def _new_loan_dialog(self):
         window=tk.Toplevel(self);window.title('Issue a temporary loan');window.transient(self);window.grab_set()

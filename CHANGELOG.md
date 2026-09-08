@@ -1,5 +1,10 @@
 # A.C.E. Changelog
 
+## 1.7.2 - 2026-09-08
+
+- Added Loan Queued Items beside the standard checkout action so the same barcode queue and cadet fields can create a temporary loan.
+- The loan confirmation asks only for the return deadline and purpose before issuing the queued items.
+
 ## 1.7.1 - 2026-09-08
 
 - Moved temporary-loan management inside the Checkout tab.

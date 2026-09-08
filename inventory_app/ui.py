@@ -989,16 +989,19 @@ class InventoryApp(LoanUiMixin, tk.Tk):
 
         checkout_actions = ttk.Frame(checkout_frame)
         checkout_actions.grid(row=11, column=0, sticky="ew", pady=(12, 0))
-        for index in range(3):
+        for index in range(4):
             checkout_actions.columnconfigure(index, weight=1)
         ttk.Button(checkout_actions, text="Check Out Queued Items", command=self._submit_checkout).grid(
             row=0, column=0, sticky="ew", padx=(0, 4)
         )
-        ttk.Button(checkout_actions, text="Save Cadet", command=self._save_checkout_cadet).grid(
+        ttk.Button(checkout_actions, text="Loan Queued Items", command=self._submit_checkout_as_loan).grid(
             row=0, column=1, sticky="ew", padx=4
         )
+        ttk.Button(checkout_actions, text="Save Cadet", command=self._save_checkout_cadet).grid(
+            row=0, column=2, sticky="ew", padx=4
+        )
         ttk.Button(checkout_actions, text="Reset Checkout", command=self._clear_checkout_form).grid(
-            row=0, column=2, sticky="ew", padx=(4, 0)
+            row=0, column=3, sticky="ew", padx=(4, 0)
         )
 
     def _build_returns_tab(self) -> None:
