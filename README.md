@@ -4,7 +4,9 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.8.8 (October 19, 2026)**
+**Current source version: 1.9.0-beta.1 (October 26, 2026)**
+
+**CIC bag-drag beta:** Open **Cadet Inventory Cards** in ACE, sign in and start a phone session. Phones join the same trusted local network using the displayed URL and eight-digit session code. The guided form asks for last name, optional middle initial, first name and email, then item quantities for OCPs, PTGs, blues, service dress and other uniforms, and only afterwards requests exact sizes/types for the items reported. Explicit None answers are saved. Staff must review and approve every card. [CIC setup, reconciliation and security limits](docs/CIC_BETA.md).
 
 Generate Full Report and Previous Week Report now produce the same self-contained HTML browser report, with the full catalog, checkout, fitting, cadet, loan, data-quality and current inventory sections plus uniform charts. Reports can be printed from the browser and no longer include a COA section. Choose an end date of today to include today's saved activity. Explicit WINGS spreadsheet and CSV exports remain available.
 

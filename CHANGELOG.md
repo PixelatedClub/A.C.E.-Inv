@@ -1,5 +1,13 @@
 # A.C.E. Changelog
 
+## 1.9.0-beta.1 - 2026-10-26
+
+- Add an ACE-hosted Python CIC phone session with a quantity-first bag-drag questionnaire, later size allocation, explicit None answers and a private submission receipt.
+- Add durable Pending/Held/Approved/Rejected cards, desktop notifications, explicit profile confirmation, item correction and an atomic reconciliation preview.
+- Reuse current holdings and preserve acquired/purchased records. Add only missing held units and matching checkouts, without changing available shelf stock. Replayed approval cannot duplicate stock.
+- Block unresolved items and block official WINGS exports for local/unverified IDs. Provide individual card copies and approved, identity-labeled WINGS workbooks for cadre review.
+- Sessions default to localhost, require explicit trusted-LAN enablement, expire within eight hours, support supplied TLS certificates, and stop on ACE exit. No cloud service or automatic email/official WINGS issue is enabled.
+
 ## 1.8.8 - 2026-10-19
 
 - Generate Full Report and Previous Week Report share a self-contained HTML report with navigable detail sections and embedded uniform charts.

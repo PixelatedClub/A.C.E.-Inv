@@ -19,6 +19,7 @@ from .defaults import (
 from .wings_catalog import WINGS_CATALOG
 from .wings_catalog_official_import import WINGS_OFFICIAL_IMPORT_ADDITIONS
 from .catalog_inventory import COUNT_SCHEMA
+from .cic import CIC_SCHEMA
 
 
 # Compatibility constants are intentionally empty in the clean deployment.
@@ -379,6 +380,10 @@ class InventoryDatabase:
         connection = self.connect()
         try:
             connection.executescript(SCHEMA_SQL)
+            connection.executescript(CIC_SCHEMA)
+            for table,column,definition in [('cic_cards','assessment_json',"TEXT NOT NULL DEFAULT '{}'"),('cic_lines','group_key',"TEXT NOT NULL DEFAULT ''")]:
+                if column not in {r['name'] for r in connection.execute('PRAGMA table_info('+table+')')}:
+                    connection.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
             self._migrate_schema(connection)
             self._seed_catalog(connection)
             connection.commit()

@@ -246,9 +246,10 @@ class _WingsHtmlTableParser(HTMLParser):
 from .loans import LoanServiceMixin
 from .acquisition_undo import AcquisitionUndoMixin
 from .catalog_inventory import CatalogInventoryMixin
+from .cic import CicServiceMixin
 
 
-class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryMixin):
+class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryMixin, CicServiceMixin):
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
         self.database = InventoryDatabase(settings)

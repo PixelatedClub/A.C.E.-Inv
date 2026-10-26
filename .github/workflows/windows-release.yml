@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag, for example v1.8.8
+        description: Release tag, for example v1.9.0-beta.1
         required: true
-        default: v1.8.8
+        default: v1.9.0-beta.1
+      prerelease:
+        description: Mark as a beta/prerelease (does not replace the latest stable download)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -86,9 +90,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          IS_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          gh release create $env:RELEASE_TAG `
-            release/A.C.E.zip `
-            release/SHA256SUMS.txt `
-            --title "A.C.E. Inventory $env:RELEASE_TAG" `
-            --notes-file release/RELEASE_NOTES.md
+          $releaseArgs = @('release', 'create', $env:RELEASE_TAG, 'release/A.C.E.zip', 'release/SHA256SUMS.txt', '--title', "A.C.E. Inventory $env:RELEASE_TAG", '--notes-file', 'release/RELEASE_NOTES.md')
+          if ($env:IS_PRERELEASE -eq 'true') { $releaseArgs += '--prerelease' }
+          gh @releaseArgs

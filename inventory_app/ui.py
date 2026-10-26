@@ -148,8 +148,9 @@ CATALOG_ALIASES = {
 
 from .checkout_drafts import CheckoutDraftMixin
 from .index_barcodes import IndexBarcodeMixin
+from .cic_ui import CicUiMixin
 
-class InventoryApp(CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
+class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
     def __init__(self, settings: AppSettings, *, preload_catalog: bool = False) -> None:
         super().__init__()
         self.settings = settings
@@ -448,6 +449,7 @@ class InventoryApp(CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
         self.returns_tab = ttk.Frame(self.notebook, padding=12)
         self.cadets_tab = ttk.Frame(self.notebook, padding=12)
         self.cadet_fitting_tab = ttk.Frame(self.notebook, padding=12)
+        self.cic_tab = ttk.Frame(self.notebook, padding=12)
         self.reports_tab = ttk.Frame(self.notebook, padding=12)
         self.settings_tab = ttk.Frame(self.notebook, padding=12)
 
@@ -460,6 +462,7 @@ class InventoryApp(CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
         self.notebook.add(self.returns_tab, text="Returns")
         self.notebook.add(self.cadets_tab, text="Cadets")
         self.notebook.add(self.cadet_fitting_tab, text="Cadet Fitting Index")
+        self.notebook.add(self.cic_tab, text="Cadet Inventory Cards")
         self.notebook.add(self.reports_tab, text="Reports")
         self.notebook.add(self.settings_tab, text="Settings")
 
@@ -473,6 +476,7 @@ class InventoryApp(CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
         self._build_loans_tab()
         self._build_cadets_tab()
         self._build_cadet_fitting_tab()
+        self._build_cic_tab()
         self._build_reports_tab()
         self._build_settings_tab()
         from .shortcuts import install_shortcuts
@@ -1732,6 +1736,7 @@ class InventoryApp(CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
         self.refresh_admin_codes()
         self._update_generator_preview()
         if hasattr(self,'checkout_drafts'):self._refresh_checkout_draft_stock()
+        self.refresh_cic()
         self._set_status(f"Database: {self.settings.database_path}")
 
     def refresh_index(self) -> None:
@@ -5436,6 +5441,9 @@ class InventoryApp(CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
             self.settings_protected_backup_var.set(str(Path(selected).expanduser()))
 
     def _save_settings(self) -> None:
+        if getattr(self,'cic_session',None):
+            self._show_error('Stop the CIC phone session before changing database settings.')
+            return
         try:
             new_settings = AppSettings(
                 org_name=self.settings_org_name_var.get().strip() or self.settings.org_name,
