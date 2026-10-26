@@ -1,12 +1,8 @@
 import gc,json,secrets,tempfile,threading,unittest,uuid,zipfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from urllib.request import Request,urlopen
-from urllib.error import HTTPError
-from urllib.parse import urlsplit
 from inventory_app.config import AppSettings
 from inventory_app.services import InventoryService,InventoryError
-from inventory_app.cic_server import CicSession
 from inventory_app.cic import item_key
 
 ADMIN={'role':'CADRE','display_name':'CADRE','admin_id':None}
@@ -163,52 +159,3 @@ class CicTests(unittest.TestCase):
    self.assertEqual(c.execute('SELECT COUNT(*) FROM items').fetchone()[0],0)
    self.assertEqual(c.execute('SELECT COUNT(*) FROM transactions').fetchone()[0],0)
    self.assertEqual(c.execute('SELECT COUNT(*) FROM cadets').fetchone()[0],1)
-
-
-class CicServerTests(CicTests):
- # The inherited service tests are also exercised against the server-enabled setup.
- def setUp(self):
-  super().setUp();self.session=CicSession(self.service)
- def tearDown(self):
-  self.session.stop();super().tearDown()
- def call(self,path,method='GET',data=None,token=None,origin=None,host=None,site=None):
-  headers={}
-  if token:headers['Authorization']='Bearer '+token
-  if origin:headers['Origin']=origin
-  if host:headers['Host']=host
-  if site:headers['Sec-Fetch-Site']=site
-  body=None
-  if data is not None:body=json.dumps(data).encode();headers['Content-Type']='application/json'
-  address=urlsplit(self.session.join_url)
-  request=Request(f'{address.scheme}://{address.netloc}'+path,data=body,headers=headers,method=method)
-  try:
-   with urlopen(request,timeout=10) as r:return r.status,r.read(),dict(r.headers)
-  except HTTPError as e:return e.code,e.read(),dict(e.headers)
- def test_http_auth_origin_and_no_admin_routes(self):
-  self.assertEqual(len(self.session.code),6)
-  self.assertTrue(self.session.code.isdigit())
-  self.assertTrue(self.session.join_url.endswith('/det005'))
-  self.assertEqual(self.call('/det005',site='cross-site')[0],200)
-  self.assertEqual(self.call('/',site='cross-site')[0],200)
-  self.assertEqual(self.call('/api/catalog',token=self.session.token,site='cross-site')[0],403)
-  self.assertEqual(self.call('/api/catalog')[0],401)
-  self.assertEqual(self.call('/api/catalog',token=self.session.token,origin='https://evil.invalid')[0],403)
-  self.assertEqual(self.call('/api/catalog',token=self.session.token,host='evil.invalid')[0],403)
-  self.assertEqual(self.call('/api/approve',method='POST',data={},token=self.session.token)[0],404)
-  self.assertEqual(self.call('/api/catalog',token=self.session.token)[0],200)
- def test_join_submit_receipt_download(self):
-  status,body,_=self.call('/api/join','POST',{'code':self.session.code});self.assertEqual(status,200)
-  token=json.loads(body)['token'];p=self.payload();status,body,_=self.call('/api/cards','POST',p,token=token)
-  self.assertEqual(status,201);cid=json.loads(body)['card_id']
-  self.assertEqual(self.call('/api/cards/'+cid,token=token)[0],400)
-  self.assertEqual(self.call('/api/cards/'+cid,token=p['receipt_token'])[0],200)
-  self.assertEqual(self.call('/api/cards/'+cid+'/wings',token=p['receipt_token'])[0],400)
-  self.approve(self.service.get_cic(cid))
-  status,body,headers=self.call('/api/cards/'+cid+'/wings',token=p['receipt_token'])
-  self.assertEqual(status,200);self.assertTrue(body.startswith(b'PK'));self.assertIn('.xlsx',headers['Content-Disposition'])
-  self.assertEqual(len(self.session.notifications()),1)
- def test_expiration(self):
-  self.session.expires=0;self.assertEqual(self.call('/api/catalog',token=self.session.token)[0],410)
-
-
-if __name__=='__main__':unittest.main()

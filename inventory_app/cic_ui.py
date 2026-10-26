@@ -1,19 +1,19 @@
-"""Desktop-controlled phone sessions and explicit CIC identity/item review."""
+"""Microsoft CIC intake and explicit identity/item review."""
 import tkinter as tk
-from tkinter import ttk,messagebox,filedialog
+from tkinter import ttk,messagebox
 from .barcode_utils import open_file
 from .layout import ResizableSplit
-from .cic_server import CicSession,local_addresses
 from .cic import item_key
+from .cic_sharepoint_ui import MicrosoftCicUiMixin
 
 
-class CicUiMixin:
+class CicUiMixin(MicrosoftCicUiMixin):
     def _build_cic_tab(self):
-        self.cic_session=None;self.cic_cards={};self.cic_unread=0;self.cic_seen_notices=set();self.cic_search=tk.StringVar();self.cic_status=tk.StringVar(value='Phone session stopped. No incoming connection is accepted.')
+        self.cic_cards={};self.cic_unread=0;self.cic_search=tk.StringVar();self.cic_status=tk.StringVar(value='Cards arrive through Microsoft Forms, SharePoint and OneDrive. Review each card before approval.')
         self.notebook.bind('<<NotebookTabChanged>>',self._ack_cic_notice,add='+')
         self.cic_tab.columnconfigure(0,weight=1);self.cic_tab.rowconfigure(2,weight=1)
         controls=ttk.Frame(self.cic_tab);controls.grid(row=0,column=0,sticky='ew')
-        for label,command in [('Start Phone Session',self._start_cic_session),('Stop Session',self._stop_cic_session),('Copy Join Link',self._copy_cic_link),('Refresh',self.refresh_cic),('Review Selected Card',self._review_cic)]:
+        for label,command in [('Copy Form Link',self._copy_microsoft_form_link),('Refresh',self.refresh_cic),('Review Selected Card',self._review_cic)]:
             ttk.Button(controls,text=label,command=command).pack(side='left',padx=3)
         ttk.Label(self.cic_tab,textvariable=self.cic_status,wraplength=1100).grid(row=1,column=0,sticky='w',pady=10)
         split=ResizableSplit(self.cic_tab,orient=tk.HORIZONTAL);split.grid(row=2,column=0,sticky='nsew')
@@ -28,62 +28,22 @@ class CicUiMixin:
         ttk.Button(buttons,text='Card Copy',command=lambda:self._cic_export(False)).pack(side='left',padx=3)
         ttk.Button(buttons,text='Approved WINGS Export',command=lambda:self._cic_export(True)).pack(side='left',padx=3)
         ttk.Label(self.cic_tab,text='Submission does not issue stock. Approval adds only unrecorded possessions; missing or misspelled items remain Held. Local IDs block official WINGS export.',wraplength=1150).grid(row=3,column=0,sticky='w',pady=8)
-        self.refresh_cic();self.after(2000,self._poll_cic)
+        self._init_microsoft_cic(controls)
+        self.refresh_cic()
 
     def _cic_admin(self):
         if not self.current_admin:
             from .services import InventoryError
-            raise InventoryError('Sign in as an ACE administrator before starting or reviewing cards.')
+            raise InventoryError('Sign in as an ACE administrator before reviewing cards.')
         return self.current_admin
 
-    def _start_cic_session(self):
-        if self.cic_session:self._show_error('Stop the current session before starting another.');return
-        try:self._cic_admin()
-        except Exception as error:self._show_error(str(error));return
-        dialog=tk.Toplevel(self);dialog.title('Start CIC Phone Session');dialog.transient(self)
-        frame=ttk.Frame(dialog,padding=18);frame.pack(fill='both',expand=True)
-        lan=tk.BooleanVar(value=False);addresses=local_addresses();address=tk.StringVar(value=addresses[0] if addresses else '')
-        port=tk.StringVar(value='8766');hours=tk.StringVar(value='2');cert=tk.StringVar();key=tk.StringVar()
-        ttk.Label(frame,text='Connect phones to the same trusted Wi-Fi / hotspot as this computer.\nCampus Wi-Fi may block device-to-device traffic. No firewall rules or router ports are changed.\nDefault: this computer only. LAN access must be enabled explicitly.',wraplength=640).pack(anchor='w',pady=8)
-        ttk.Checkbutton(frame,text='Allow phones on my trusted local network',variable=lan).pack(anchor='w')
-        for label,var in [('Computer LAN IPv4 address',address),('Port',port),('Session duration in hours (1-8)',hours)]:
-            ttk.Label(frame,text=label).pack(anchor='w',pady=(8,0));ttk.Entry(frame,textvariable=var).pack(fill='x')
-        ttk.Label(frame,text='Optional HTTPS: select a certificate trusted by your phones and its private key.\nWithout these, HTTP is unencrypted. Use only an isolated, trusted network for the beta.',wraplength=640).pack(anchor='w',pady=12)
-        for label,var in [('TLS certificate',cert),('TLS private key',key)]:
-            row=ttk.Frame(frame);row.pack(fill='x',pady=3);ttk.Entry(row,textvariable=var).pack(side='left',fill='x',expand=True)
-            ttk.Button(row,text=label,command=lambda v=var:v.set(filedialog.askopenfilename(parent=dialog))).pack(side='left')
-        def start():
-            try:
-                if self.cic_session:raise ValueError('A phone session is already active. Stop it before starting another.')
-                if lan.get() and not cert.get() and not messagebox.askyesno('Unencrypted local beta','HTTP does not encrypt cadet information in transit. Start only on an isolated, trusted network with permission to collect these cards. Continue?',parent=dialog):return
-                self.cic_session=CicSession(self.service,host=address.get().strip() if lan.get() else '127.0.0.1',advertise_host=address.get().strip() if lan.get() else '127.0.0.1',port=int(port.get()),hours=float(hours.get()),certfile=cert.get(),keyfile=key.get())
-                self.cic_status.set(f'Active: {self.cic_session.join_url}  |  Join code: {self.cic_session.code}  |  Expires after {hours.get()} hours. Keep ACE open.')
-                dialog.destroy()
-            except Exception as error:self._show_error(str(error))
-        ttk.Button(frame,text='Start Session',command=start).pack(pady=12)
-
-    def _stop_cic_session(self):
-        if self.cic_session:self.cic_session.stop();self.cic_session=None
-        self.cic_status.set('Session stopped. Submitted cards remain in ACE for review.')
-
-    def _copy_cic_link(self):
-        if not self.cic_session:self._show_error('Start a phone session first.');return
-        self.clipboard_clear();self.clipboard_append(f'Det005: Open {self.cic_session.join_url} and enter session code {self.cic_session.code}')
-        self._set_status('CIC join link and code copied. Share only with the current bag-drag participants.')
-
-    def _poll_cic(self):
-        if self.cic_session:
-            import time
-            if time.monotonic()>self.cic_session.expires:self._stop_cic_session()
-            else:
-                events=[e for e in self.cic_session.notifications() if e['card_id'] not in self.cic_seen_notices]
-                if events:
-                    self.cic_seen_notices.update(e['card_id'] for e in events)
-                    self.refresh_cic();self.bell();self._set_status(f'{len(events)} CIC submission(s) received. Review them in Cadet Inventory Cards.')
-                    if self.notebook.select()!=str(self.cic_tab):
-                        self.cic_unread+=len(events)
-                        self.notebook.tab(self.cic_tab,text=f'Cadet Inventory Cards ({self.cic_unread} new)')
-        self.after(2000,self._poll_cic)
+    def _copy_microsoft_form_link(self):
+        if not self.microsoft_reader:
+            self._show_error('Configure Microsoft Intake first.');return
+        from urllib.parse import urlencode
+        url='https://forms.cloud.microsoft/Pages/ResponsePage.aspx?'+urlencode({'id':self.microsoft_reader.profile['form_id']})
+        self.clipboard_clear();self.clipboard_append(url)
+        self._set_status('Microsoft CIC form link copied.')
 
     def _ack_cic_notice(self,event=None):
         if self.notebook.select()==str(self.cic_tab):
@@ -107,6 +67,9 @@ class CicUiMixin:
             card=self.service.get_cic(card_id)
             content=f"{card['cadet_name']}\n{card['cadet_email']}\nStatus: {card['status']}\nSubmitted: {card['submitted_at']}\nCard: {card_id}\n\n"+'\n\n'.join(f"{r['entered_name']} / {r['entered_size']} x {r['quantity']}\nID: {r['item_no'] or '(unresolved)'}"+(f"\nHOLD: {r['problem']}" if r['problem'] else '') for r in card['lines'])
             if card['notes']:content+='\n\nNotes: '+card['notes']
+            if card.get('intake_issues_json','[]')!='[]':
+                import json
+                content+='\n\nMicrosoft intake holds (use Correct Microsoft Answers):\n'+'\n'.join(json.loads(card['intake_issues_json']))
             if card['assessment_json']!='{}':
                 import json
                 from .cic_questions import QUESTIONS
@@ -190,5 +153,7 @@ class CicUiMixin:
         entry.bind('<Return>',lambda e:search());ttk.Button(window,text='Search',command=search).pack(pady=4);ttk.Button(window,text='Use Selected Item',command=use).pack(pady=8);search()
 
     def destroy(self):
-        if getattr(self,'cic_session',None):self.cic_session.stop();self.cic_session=None
+        self.microsoft_reader=None
+        worker=getattr(self,'microsoft_worker',None)
+        if worker and worker.is_alive():worker.join(timeout=2)
         super().destroy()

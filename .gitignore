@@ -48,3 +48,5 @@ tmp/
 Thumbs.db
 checkout_drafts.json
 checkout_drafts.json.tmp
+portable_data/cic_microsoft_profile.json
+cic_microsoft_profile.json

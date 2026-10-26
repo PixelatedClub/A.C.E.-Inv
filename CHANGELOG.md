@@ -1,5 +1,19 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.2 - Microsoft CIC branch - 2026-10-26
+
+- Removed the local CIC web server, phone-session controls, LAN URLs and session codes from this Microsoft intake branch.
+- CIC uses Microsoft Forms, SharePoint and the OneDrive-synced inbox. Copy Form Link copies the configured Microsoft form URL.
+- Existing cards, review, reconciliation and exports remain available.
+
+## 1.9.0-cic.1 - Microsoft CIC branch - 2026-10-26
+
+- Add opt-in, background Microsoft CIC intake from a dedicated OneDrive-synced SharePoint library. Incoming cards do not change operational inventory until staff approval.
+- Validate form identity, family/item possession, quantities and exact type/size allocation. Hold incomplete, ambiguous or conflicting cards and retain original submissions beside audited staff corrections.
+- Deduplicate form/response IDs across retries and restarts, detect changed responses, and recover interrupted imports. The inbox reader never edits, moves or deletes source files.
+- Add labeled correction tabs, intake status/errors and nonblocking notifications. Tie intake configuration to its local inventory database.
+- Distinguish ties and tie tabs. Copy LAN join URLs without surrounding instructions.
+
 ## 1.9.0-beta.2 - 2026-10-26
 
 - Shorten phone join codes to six digits; use a Det005-branded `/det005` join page while keeping existing root links supported.

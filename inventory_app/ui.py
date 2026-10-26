@@ -5440,8 +5440,8 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             self.settings_protected_backup_var.set(str(Path(selected).expanduser()))
 
     def _save_settings(self) -> None:
-        if getattr(self,'cic_session',None):
-            self._show_error('Stop the CIC phone session before changing database settings.')
+        if getattr(self,'microsoft_reader',None) or (getattr(self,'microsoft_worker',None) and self.microsoft_worker.is_alive()):
+            self._show_error('Pause Microsoft Intake before changing database settings.')
             return
         try:
             new_settings = AppSettings(

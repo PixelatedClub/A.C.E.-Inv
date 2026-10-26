@@ -9,7 +9,7 @@ QUESTIONS=[
  ('ptg.jacket','PTGs','PT jackets'),('ptg.other','PTGs','Other PTG items'),
  ('blues.cover','Blues','Flight caps / covers'),('blues.shirt','Blues','Blues shirts'),
  ('blues.trousers','Blues','Trousers / slacks'),('blues.skirt','Blues','Skirts'),('blues.shoes','Blues','Dress shoes (pairs)'),
- ('blues.belt','Blues','Belts / buckles'),('blues.tie','Blues','Ties / tie tabs'),('blues.rank','Blues','Cloth / metal ranks'),
+ ('blues.belt','Blues','Belts / buckles'),('blues.tie','Blues','Ties'),('blues.tietab','Blues','Tie tabs'),('blues.rank','Blues','Cloth / metal ranks'),
  ('blues.jacket','Blues','Lightweight jackets / windbreakers'),('blues.other','Blues','Other blues items'),
  ('service.coat','Service dress','Service dress coats'),('service.cap','Service dress','Service / wheel caps'),
  ('service.other','Service dress','Other service dress items'),
@@ -21,6 +21,7 @@ def question_for(item):
     if 'service coat' in text or 'service dress coat' in text:return 'service.coat'
     if 'service cap' in text or 'wheel cap' in text:return 'service.cap'
     if 'flight suit' in text:return 'other.flight'
+    if 'tie tab' in text or 'tie-tab' in text:return 'blues.tietab'
     if any(x in text for x in ('ocp','patrol','coyote','rigger')):
         for words,key in [(('afrotc','af rotc'),'afrotc'),(('flag',),'flag'),(('rank','insignia'),'rank'),(('patrol','cap','cover'),'cover'),(('fleece',),'fleece'),(('boot',),'boots'),(('sock',),'socks'),(('belt','rigger'),'belt'),(('t-shirt','tshirt','undershirt','shirt tan'),'shirt'),(('trouser','pant'),'trousers'),(('blouse','coat','shirt'),'coat')]:
             if any(word in text for word in words):return 'ocp.'+key

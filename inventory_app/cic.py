@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS cic_cards (
  submitted_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
  cadet_id INTEGER REFERENCES cadets(cadet_id), approved_by TEXT NOT NULL DEFAULT '',
  approved_at TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', assessment_json TEXT NOT NULL DEFAULT '{}',
+ intake_issues_json TEXT NOT NULL DEFAULT '[]',
  UNIQUE(session_id,request_id)
 );
 CREATE TABLE IF NOT EXISTS cic_lines (
@@ -61,7 +62,7 @@ class CicServiceMixin:
         card=c.execute('SELECT * FROM cic_cards WHERE card_id=?',(card_id,)).fetchone()
         if card is None:fail('Card not found.')
         if card['status'] in ('Approved','Rejected'):return
-        catalog=self._cic_catalog(c);problems=[]
+        catalog=self._cic_catalog(c);problems=json.loads(card['intake_issues_json'])
         for line in c.execute('SELECT * FROM cic_lines WHERE card_id=?',(card_id,)).fetchall():
             cat=catalog.get(item_key(line['item_no']))
             problem=''
@@ -72,7 +73,7 @@ class CicServiceMixin:
             if problem:problems.append(problem)
         c.execute('UPDATE cic_cards SET status=?,updated_at=? WHERE card_id=?',('Held' if problems else 'Pending',now(),card_id))
 
-    def submit_cic(self, payload, *, session_id):
+    def submit_cic(self, payload, *, session_id, intake_issues=None):
         if not isinstance(payload,dict):fail('Card must be a JSON object.')
         name,email=self._validate_cadet_identity(str(payload.get('name',''))[:200],str(payload.get('email',''))[:254])
         request=str(payload.get('request_id',''))
@@ -107,8 +108,8 @@ class CicServiceMixin:
                 return self._cic_card(c,old['card_id'])
             pending=c.execute("SELECT COUNT(*) FROM cic_cards WHERE status IN ('Pending','Held')").fetchone()[0]
             if pending>=1000:fail('Intake queue is full. Ask staff to review submitted cards.')
-            c.execute('''INSERT INTO cic_cards(card_id,session_id,request_id,receipt_hash,cadet_name,cadet_email,status,submitted_at,updated_at,notes,assessment_json)
-             VALUES(?,?,?,?,?,?,'Pending',?,?,?,?)''',(card_id,session_id,request,receipt_hash(token),name,email,stamp,stamp,str(payload.get('notes',''))[:1000],json.dumps(assessment)))
+            c.execute('''INSERT INTO cic_cards(card_id,session_id,request_id,receipt_hash,cadet_name,cadet_email,status,submitted_at,updated_at,notes,assessment_json,intake_issues_json)
+             VALUES(?,?,?,?,?,?,'Pending',?,?,?,?,?)''',(card_id,session_id,request,receipt_hash(token),name,email,stamp,stamp,str(payload.get('notes',''))[:1000],json.dumps(assessment),json.dumps(intake_issues or [])))
             c.executemany('INSERT INTO cic_lines(card_id,item_no,entered_name,entered_size,quantity,group_key) VALUES(?,?,?,?,?,?)',[(card_id,*x) for x in cleaned])
             self._cic_revalidate(c,card_id)
             self._cic_event(c,card_id,'Submitted','Phone intake','No stock, cadet profiles, or checkouts changed.')

@@ -3,7 +3,6 @@ from pathlib import Path
 from unittest.mock import patch
 from inventory_app.config import AppSettings
 from inventory_app.ui import InventoryApp
-from inventory_app.cic_server import CicSession
 
 
 class CicUiTests(unittest.TestCase):
@@ -29,24 +28,21 @@ class CicUiTests(unittest.TestCase):
   self.assertIn('Cadet Inventory Cards',[self.app.notebook.tab(t,'text') for t in self.app.notebook.tabs()])
   dialogs=[w for w in self.app.winfo_children() if w.winfo_class()=='Toplevel'];self.assertTrue(dialogs)
   for d in dialogs:d.destroy()
- def test_stop_session_revokes_listener(self):
-  self.app.cic_session=CicSession(self.app.service)
-  session=self.app.cic_session;self.app._stop_cic_session()
-  self.assertIsNone(self.app.cic_session);self.assertFalse(session.thread.is_alive())
- def test_database_change_blocked_while_hosting(self):
-  self.app.cic_session=CicSession(self.app.service)
-  with patch.object(self.app,'_show_error') as error:self.app._save_settings();error.assert_called_once()
- def test_incoming_notice_does_not_open_a_window_or_switch_tabs(self):
+ def test_microsoft_notice_does_not_switch_tabs(self):
   self.app.notebook.select(self.app.items_tab);self.app.update()
-  self.app.cic_session=CicSession(self.app.service)
-  self.app.cic_session.events.append({'card_id':'test-card','status':'Pending'})
+  reader=object();self.app.microsoft_reader=reader
+  self.app.microsoft_results.put((reader, (['test-card'], [])))
+  from unittest.mock import Mock
+  self.app.microsoft_worker=Mock();self.app.microsoft_worker.is_alive.return_value=True
   with patch('inventory_app.cic_ui.tk.Toplevel',side_effect=AssertionError('No notification popup')):
-   self.app._poll_cic()
+   self.app._poll_microsoft_cic()
   self.assertEqual(self.app.notebook.select(),str(self.app.items_tab))
-  self.assertIsNone(self.app.grab_current())
   self.assertIn('(1 new)',self.app.notebook.tab(self.app.cic_tab,'text'))
-  self.app.notebook.select(self.app.cic_tab);self.app.update()
-  self.assertEqual(self.app.cic_unread,0)
+  self.app.microsoft_reader=None;self.app.microsoft_worker=None
+ def test_local_server_controls_removed(self):
+  self.assertFalse(hasattr(self.app,'_start_cic_session'))
+  self.assertFalse(hasattr(self.app,'_poll_cic'))
+
  def test_background_checkout_preserves_current_form_and_selection(self):
   self.app.notebook.select(self.app.items_tab);self.app.update()
   original=self.app.checkout_notebook.select()

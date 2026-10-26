@@ -381,7 +381,9 @@ class InventoryDatabase:
         try:
             connection.executescript(SCHEMA_SQL)
             connection.executescript(CIC_SCHEMA)
-            for table,column,definition in [('cic_cards','assessment_json',"TEXT NOT NULL DEFAULT '{}'"),('cic_lines','group_key',"TEXT NOT NULL DEFAULT ''")]:
+            from .cic_sharepoint import REMOTE_SCHEMA
+            connection.executescript(REMOTE_SCHEMA)
+            for table,column,definition in [('cic_cards','assessment_json',"TEXT NOT NULL DEFAULT '{}'"),('cic_lines','group_key',"TEXT NOT NULL DEFAULT ''"),('cic_cards','intake_issues_json',"TEXT NOT NULL DEFAULT '[]'")]:
                 if column not in {r['name'] for r in connection.execute('PRAGMA table_info('+table+')')}:
                     connection.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
             self._migrate_schema(connection)
