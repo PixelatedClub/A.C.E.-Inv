@@ -37,7 +37,8 @@ class CicSession:
                 if host not in outer.allowed_hosts:self._reply(403,{'error':'Invalid host.'});return False
                 origin=self.headers.get('Origin')
                 if origin and origin!=outer.scheme+'://'+host:self._reply(403,{'error':'Cross-origin requests are not allowed.'});return False
-                if self.headers.get('Sec-Fetch-Site') in ('cross-site',):self._reply(403,{'error':'Cross-site request rejected.'});return False
+                if self.headers.get('Sec-Fetch-Site')=='cross-site' and not (self.command=='GET' and urlsplit(self.path).path=='/'):
+                    self._reply(403,{'error':'Cross-site request rejected.'});return False
                 with outer.lock:
                     key=self.client_address[0];q=outer.rate[key];stamp=time.monotonic()
                     while q and q[0]<stamp-60:q.popleft()

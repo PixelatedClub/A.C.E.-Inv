@@ -7,6 +7,7 @@
 - Reuse current holdings and preserve acquired/purchased records. Add only missing held units and matching checkouts, without changing available shelf stock. Replayed approval cannot duplicate stock.
 - Block unresolved items and block official WINGS exports for local/unverified IDs. Provide individual card copies and approved, identity-labeled WINGS workbooks for cadre review.
 - Sessions default to localhost, require explicit trusted-LAN enablement, expire within eight hours, support supplied TLS certificates, and stop on ACE exit. No cloud service or automatic email/official WINGS issue is enabled.
+- Refresh the separate cloud-beta certifi, PyJWT and urllib3 minimum/locked versions to address dependency advisories; CIC itself uses Python's standard library.
 
 ## 1.8.8 - 2026-10-19
 

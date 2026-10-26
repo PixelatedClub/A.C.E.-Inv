@@ -240,7 +240,7 @@ class CicServiceMixin:
                       VALUES(?,?,?,?,?,?,?,?,?,?)''',(bc,cadet['cadet_id'],cadet['full_name'],cadet['email'],stamp,approval['admin_id'],approval['approved_by_name'],approval['approved_by_role'],stamp,
                         f'CIC {card_id}: pre-existing possession confirmed by bag drag; not a new shelf issue. Original issue date unknown.'))
                     tx.append(cursor.lastrowid)
-                self._sync_item_state(c,bc)
+                if line['add']:self._sync_item_state(c,bc)
                 c.execute("UPDATE inventory_changes SET source=?,action=CASE WHEN quantity_change>0 THEN 'Recovered CIC Possession' ELSE 'CIC Reconciliation' END,details=? WHERE change_id>? AND barcode_id=?",(approval['label'],f'CIC {card_id}: reconciled pre-existing cadet possession, {line["add"]} unit(s). Not a shipment receipt. Shelf availability preserved.',last,bc))
                 # Aggregate duplicate card lines once, while preserving the submitted original quantities.
                 ids=[r['line_id'] for r in card['lines'] if item_key(r['item_no'])==item_key(line['item_no'])]

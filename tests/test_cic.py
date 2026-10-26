@@ -83,7 +83,9 @@ class CicTests(unittest.TestCase):
   self.service.acquire_checked_out_items(cadet_id=cid,transaction_ids=ids,disposition='Purchased',approved_by=ADMIN)
   before=self.operational();view=self.service.preview_cic(self.submit()['card_id'],cadet_id=cid)
   self.assertEqual(view['plan'][0]['owned'],2);self.assertEqual(view['plan'][0]['add'],0)
-  self.service.approve_cic(view['card']['card_id'],cadet_id=cid,approved_by=ADMIN,review_token=view['review_token'])
+  from unittest.mock import patch
+  with patch.object(self.service,'_sync_item_state',side_effect=AssertionError('Already recorded ownership must not touch stock')):
+   self.service.approve_cic(view['card']['card_id'],cadet_id=cid,approved_by=ADMIN,review_token=view['review_token'])
   self.assertEqual(before,self.operational())
  def test_unbalanced_existing_stock_blocks_reconciliation(self):
   self.service.ensure_catalog_inventory(item_nos=[self.cat['item_no']])
@@ -168,11 +170,12 @@ class CicServerTests(CicTests):
   super().setUp();self.session=CicSession(self.service)
  def tearDown(self):
   self.session.stop();super().tearDown()
- def call(self,path,method='GET',data=None,token=None,origin=None,host=None):
+ def call(self,path,method='GET',data=None,token=None,origin=None,host=None,site=None):
   headers={}
   if token:headers['Authorization']='Bearer '+token
   if origin:headers['Origin']=origin
   if host:headers['Host']=host
+  if site:headers['Sec-Fetch-Site']=site
   body=None
   if data is not None:body=json.dumps(data).encode();headers['Content-Type']='application/json'
   request=Request(self.session.join_url.rstrip('/')+path,data=body,headers=headers,method=method)
@@ -180,6 +183,8 @@ class CicServerTests(CicTests):
    with urlopen(request,timeout=10) as r:return r.status,r.read(),dict(r.headers)
   except HTTPError as e:return e.code,e.read(),dict(e.headers)
  def test_http_auth_origin_and_no_admin_routes(self):
+  self.assertEqual(self.call('/',site='cross-site')[0],200)
+  self.assertEqual(self.call('/api/catalog',token=self.session.token,site='cross-site')[0],403)
   self.assertEqual(self.call('/api/catalog')[0],401)
   self.assertEqual(self.call('/api/catalog',token=self.session.token,origin='https://evil.invalid')[0],403)
   self.assertEqual(self.call('/api/catalog',token=self.session.token,host='evil.invalid')[0],403)
