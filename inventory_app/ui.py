@@ -1892,7 +1892,6 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         window = tk.Toplevel(self)
         window.title("Add Custom Catalog Item" if custom else "Add WINGS Catalog Item")
         window.transient(self)
-        window.grab_set()
         window.minsize(820, 360)
         self.update_idletasks()
         dialog_width = 940
@@ -2057,7 +2056,6 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             command=save_wings_item,
         ).grid(row=0, column=1)
         window.lift()
-        window.after(50, window.focus_force if custom else item_no_entry.focus_force)
 
     def _delete_selected_index_items(self) -> None:
         selections = self.index_tree.selection()
@@ -2220,7 +2218,6 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         window = tk.Toplevel(self)
         window.title(f"{self.report_type_var.get()} Detail")
         window.transient(self)
-        window.grab_set()
         window.geometry("880x620")
         window.configure(bg="#eef4fb")
 
@@ -2307,7 +2304,6 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         dialog = tk.Toplevel(self)
         dialog.title("A.C.E. Activity Report")
         dialog.transient(self)
-        dialog.grab_set()
         dialog.geometry("780x700")
         dialog.minsize(680, 610)
         dialog.configure(bg="#eef4fb")
@@ -4004,7 +4000,6 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         window = tk.Toplevel(self)
         window.title("Cadet Transaction Detail")
         window.transient(self)
-        window.grab_set()
         window.geometry("920x560")
         window.configure(bg="#eef4fb")
 
@@ -4547,7 +4542,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             return
 
         barcode_id = str(selection[0]).upper()
-        row = self.item_cache.get(barcode_id) or self.service.get_item(barcode_id)
+        row = self.service.get_item(barcode_id)
         if not row:
             self._show_error("The selected barcode could not be loaded.")
             return
@@ -4555,7 +4550,6 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         window = tk.Toplevel(self)
         window.title(f"Edit Barcode {barcode_id}")
         window.transient(self)
-        window.grab_set()
         window.minsize(600, 470)
         window.columnconfigure(0, weight=1)
         window.rowconfigure(0, weight=1)
@@ -4622,6 +4616,11 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         notes_text.insert("1.0", str(row.get("notes", "")))
 
         def save_changes() -> None:
+            latest = self.service.get_item(barcode_id)
+            protected_fields=('item_name','category','variant','item_type','total_quantity','available_quantity','notes')
+            if latest is None or any(latest.get(k)!=row.get(k) for k in protected_fields):
+                self._show_error('This item changed while the editor was open. Close and reopen it before saving to avoid overwriting newer inventory.')
+                return
             def on_success(result: dict[str, Any]) -> None:
                 window.destroy()
                 self._after_inventory_write(result)
@@ -5529,7 +5528,6 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         window = tk.Toplevel(self)
         window.title("Credits")
         window.transient(self)
-        window.grab_set()
         window.configure(bg="#eef4fb")
         window.resizable(False, False)
 
@@ -5734,7 +5732,6 @@ A.C.E. Manual
         window = tk.Toplevel(self)
         window.title("Instructions Manual")
         window.transient(self)
-        window.grab_set()
         window.geometry("900x700")
         window.configure(bg="#eef4fb")
 

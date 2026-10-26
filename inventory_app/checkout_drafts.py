@@ -13,7 +13,7 @@ class CheckoutDraftMixin:
         self.checkout_tab.columnconfigure(0,weight=1)
         self.checkout_tab.rowconfigure(1,weight=1)
         controls=ttk.Frame(self.checkout_tab);controls.grid(row=0,column=0,sticky='ew',pady=(0,8))
-        ttk.Button(controls,text='+ New Cadet Checkout',command=self._new_checkout_draft).pack(side='left')
+        ttk.Button(controls,text='+ New Cadet Checkout',command=lambda:self._new_checkout_draft(activate=False)).pack(side='left')
         ttk.Button(controls,text='Close Checkout Tab',command=self._close_checkout_draft).pack(side='left',padx=8)
         self.checkout_notebook=ttk.Notebook(self.checkout_tab)
         self.checkout_notebook.grid(row=1,column=0,sticky='nsew')
@@ -39,7 +39,9 @@ class CheckoutDraftMixin:
         self._save_checkout_drafts()
         self.destroy()
 
-    def _new_checkout_draft(self,*,saved=None):
+    def _new_checkout_draft(self,*,saved=None,activate=True):
+        previous=self.checkout_notebook.select()
+        previous_barcode=self.current_checkout_barcode
         used={context['number'] for context in self.checkout_drafts.values()}
         self._checkout_draft_number=1
         while self._checkout_draft_number in used:self._checkout_draft_number+=1
@@ -54,7 +56,7 @@ class CheckoutDraftMixin:
         self.checkout_drafts[str(frame)]=context
         self.standard_checkout_tab=frame
         self.checkout_notebook.add(frame,text=f'Checkout {context["number"]}')
-        self.checkout_notebook.select(frame)
+        if activate or not previous:self.checkout_notebook.select(frame)
         if saved:
             for name in VARIABLES:
                 if name in saved and isinstance(saved[name],str):context[name].set(saved[name])
@@ -71,6 +73,9 @@ class CheckoutDraftMixin:
         self._update_checkout_queue_tree()
         self._checkout_draft_edited(str(frame))
         if hasattr(self,'_attach_direct_shortcuts'):self._attach_direct_shortcuts(frame)
+        if not activate and previous:
+            self._activate_checkout_draft(previous);self.current_checkout_barcode=previous_barcode
+            self._set_status(f'Checkout {context["number"]} created in the background. Select its tab when ready.')
         return frame
 
     def _activate_checkout_draft(self,key):
@@ -82,7 +87,8 @@ class CheckoutDraftMixin:
 
     def _on_checkout_draft_changed(self,event=None):
         self._activate_checkout_draft(self.checkout_notebook.select())
-        self._focus_checkout_scan()
+        if self.notebook.select()==str(self.checkout_tab) and self.grab_current() is None:
+            self._focus_checkout_scan()
 
     def _checkout_draft_edited(self,key):
         context=self.checkout_drafts.get(key)

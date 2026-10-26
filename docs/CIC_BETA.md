@@ -9,7 +9,7 @@ This is a Python feature inside ACE, not a second inventory database. A phone us
 3. For phones, connect the ACE computer and phones to the same **trusted, isolated network or hotspot**, explicitly enable LAN access, and verify the computer's IPv4 address. The default port is 8766.
 4. Set the session lifetime (at most eight hours). Optionally supply a TLS certificate and private key whose certificate is trusted by the phones. These files are not copied into the download or shared with phones.
 5. Without TLS, HTTP is unencrypted. The confirmation dialog explains this. Do not use unencrypted intake on public/shared campus Wi-Fi, expose it through port forwarding, or treat this beta as university-approved hosting. Obtain the required approval for the records you collect. The app does not change firewall rules. Network policy, client isolation or a firewall may prevent phones connecting.
-6. Share the short URL and eight-digit session code shown by ACE. A fresh session rotates its code and bearer token. Keep ACE and the computer awake during intake.
+6. Share the `/det005` URL and six-digit session code shown by ACE. A fresh session rotates its code and bearer token. Keep ACE and the computer awake during intake. The Det005 label/path is not a DNS registration: a bare `http://det005` address would require approved network DNS setup. Neither naming change bypasses Wi-Fi isolation or firewall restrictions.
 7. Stop the session when finished. Stopping or closing ACE revokes the network session; saved cards remain for staff review.
 
 ## Cadet workflow
@@ -24,7 +24,7 @@ This is a Python feature inside ACE, not a second inventory database. A phone us
 
 ## Staff review and accounting
 
-Notifications direct staff to the queue; no phone request changes operational inventory. Search cards by name/email. Review shows exact-email and same-first/last-name profile candidates. Confirm an existing profile or explicitly choose a new one. A saved email cannot be duplicated, and linking a card does not rename an existing cadet. Same-name people with distinct emails can remain separate after explicit staff confirmation.
+Notifications appear as a tab badge and status message without opening a popup or switching the active tab; no phone request changes operational inventory. Search cards by name/email. Review shows exact-email and same-first/last-name profile candidates. Confirm an existing profile or explicitly choose a new one. A saved email cannot be duplicated, and linking a card does not rename an existing cadet. Same-name people with distinct emails can remain separate after explicit staff confirmation.
 
 Use **Map Selected Line** after correcting/creating its index entry in ACE. Every line must have a valid visible item ID and matching description/size. No fuzzy matching silently chooses a stock number. A local ID resolves ACE intake but is not an official WINGS mapping.
 

@@ -9,7 +9,8 @@ from .cic import item_key
 
 class CicUiMixin:
     def _build_cic_tab(self):
-        self.cic_session=None;self.cic_cards={};self.cic_search=tk.StringVar();self.cic_status=tk.StringVar(value='Phone session stopped. No incoming connection is accepted.')
+        self.cic_session=None;self.cic_cards={};self.cic_unread=0;self.cic_seen_notices=set();self.cic_search=tk.StringVar();self.cic_status=tk.StringVar(value='Phone session stopped. No incoming connection is accepted.')
+        self.notebook.bind('<<NotebookTabChanged>>',self._ack_cic_notice,add='+')
         self.cic_tab.columnconfigure(0,weight=1);self.cic_tab.rowconfigure(2,weight=1)
         controls=ttk.Frame(self.cic_tab);controls.grid(row=0,column=0,sticky='ew')
         for label,command in [('Start Phone Session',self._start_cic_session),('Stop Session',self._stop_cic_session),('Copy Join Link',self._copy_cic_link),('Refresh',self.refresh_cic),('Review Selected Card',self._review_cic)]:
@@ -39,7 +40,7 @@ class CicUiMixin:
         if self.cic_session:self._show_error('Stop the current session before starting another.');return
         try:self._cic_admin()
         except Exception as error:self._show_error(str(error));return
-        dialog=tk.Toplevel(self);dialog.title('Start CIC Phone Session');dialog.transient(self);dialog.grab_set()
+        dialog=tk.Toplevel(self);dialog.title('Start CIC Phone Session');dialog.transient(self)
         frame=ttk.Frame(dialog,padding=18);frame.pack(fill='both',expand=True)
         lan=tk.BooleanVar(value=False);addresses=local_addresses();address=tk.StringVar(value=addresses[0] if addresses else '')
         port=tk.StringVar(value='8766');hours=tk.StringVar(value='2');cert=tk.StringVar();key=tk.StringVar()
@@ -53,6 +54,7 @@ class CicUiMixin:
             ttk.Button(row,text=label,command=lambda v=var:v.set(filedialog.askopenfilename(parent=dialog))).pack(side='left')
         def start():
             try:
+                if self.cic_session:raise ValueError('A phone session is already active. Stop it before starting another.')
                 if lan.get() and not cert.get() and not messagebox.askyesno('Unencrypted local beta','HTTP does not encrypt cadet information in transit. Start only on an isolated, trusted network with permission to collect these cards. Continue?',parent=dialog):return
                 self.cic_session=CicSession(self.service,host=address.get().strip() if lan.get() else '127.0.0.1',advertise_host=address.get().strip() if lan.get() else '127.0.0.1',port=int(port.get()),hours=float(hours.get()),certfile=cert.get(),keyfile=key.get())
                 self.cic_status.set(f'Active: {self.cic_session.join_url}  |  Join code: {self.cic_session.code}  |  Expires after {hours.get()} hours. Keep ACE open.')
@@ -66,7 +68,7 @@ class CicUiMixin:
 
     def _copy_cic_link(self):
         if not self.cic_session:self._show_error('Start a phone session first.');return
-        self.clipboard_clear();self.clipboard_append(f'Open {self.cic_session.join_url} and enter session code {self.cic_session.code}')
+        self.clipboard_clear();self.clipboard_append(f'Det005: Open {self.cic_session.join_url} and enter session code {self.cic_session.code}')
         self._set_status('CIC join link and code copied. Share only with the current bag-drag participants.')
 
     def _poll_cic(self):
@@ -74,14 +76,18 @@ class CicUiMixin:
             import time
             if time.monotonic()>self.cic_session.expires:self._stop_cic_session()
             else:
-                events=self.cic_session.notifications()
+                events=[e for e in self.cic_session.notifications() if e['card_id'] not in self.cic_seen_notices]
                 if events:
+                    self.cic_seen_notices.update(e['card_id'] for e in events)
                     self.refresh_cic();self.bell();self._set_status(f'{len(events)} CIC submission(s) received. Review them in Cadet Inventory Cards.')
-                    toast=tk.Toplevel(self);toast.title('CIC submission received');toast.transient(self)
-                    ttk.Label(toast,text=f'{len(events)} card submission(s) received.\nNo inventory has changed. Review the approval queue.',padding=18).pack()
-                    ttk.Button(toast,text='Open Queue',command=lambda:(self.notebook.select(self.cic_tab),toast.destroy())).pack(pady=8)
-                    toast.after(15000,toast.destroy)
+                    if self.notebook.select()!=str(self.cic_tab):
+                        self.cic_unread+=len(events)
+                        self.notebook.tab(self.cic_tab,text=f'Cadet Inventory Cards ({self.cic_unread} new)')
         self.after(2000,self._poll_cic)
+
+    def _ack_cic_notice(self,event=None):
+        if self.notebook.select()==str(self.cic_tab):
+            self.cic_unread=0;self.notebook.tab(self.cic_tab,text='Cadet Inventory Cards')
 
     def refresh_cic(self):
         if not hasattr(self,'cic_tree'):return

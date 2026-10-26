@@ -15,7 +15,7 @@ class CicSession:
     def __init__(self,service,*,host='127.0.0.1',port=0,advertise_host='127.0.0.1',hours=2,certfile='',keyfile=''):
         if not 0<hours<=8:raise ValueError('Session duration must be 1 to 8 hours.')
         socket.inet_aton(advertise_host)
-        self.service=service;self.token=secrets.token_urlsafe(32);self.code=f'{secrets.randbelow(100000000):08d}';self.session_id=str(uuid.uuid4())
+        self.service=service;self.token=secrets.token_urlsafe(32);self.code=f'{secrets.randbelow(1000000):06d}';self.session_id=str(uuid.uuid4())
         self.joins=defaultdict(deque)
         self.expires=time.monotonic()+hours*3600;self.events=deque();self.lock=threading.Lock();self.rate=defaultdict(deque)
         outer=self
@@ -37,7 +37,7 @@ class CicSession:
                 if host not in outer.allowed_hosts:self._reply(403,{'error':'Invalid host.'});return False
                 origin=self.headers.get('Origin')
                 if origin and origin!=outer.scheme+'://'+host:self._reply(403,{'error':'Cross-origin requests are not allowed.'});return False
-                if self.headers.get('Sec-Fetch-Site')=='cross-site' and not (self.command=='GET' and urlsplit(self.path).path=='/'):
+                if self.headers.get('Sec-Fetch-Site')=='cross-site' and not (self.command=='GET' and urlsplit(self.path).path in ('/','/det005','/det005/')):
                     self._reply(403,{'error':'Cross-site request rejected.'});return False
                 with outer.lock:
                     key=self.client_address[0];q=outer.rate[key];stamp=time.monotonic()
@@ -55,7 +55,7 @@ class CicSession:
                 if not self._guard():return
                 path=urlsplit(self.path).path
                 try:
-                    if path=='/':self._reply(200,PHONE_HTML,'text/html; charset=utf-8');return
+                    if path in ('/','/det005','/det005/'):self._reply(200,PHONE_HTML,'text/html; charset=utf-8');return
                     if path=='/api/catalog':
                         if self._session():self._reply(200,outer.service.cic_catalog())
                         return
@@ -124,8 +124,8 @@ class CicSession:
         except Exception:self.httpd.server_close();raise
         port=self.httpd.server_port
         self.allowed_hosts={f'{advertise_host}:{port}',f'127.0.0.1:{port}',f'localhost:{port}'}
-        self.url=f'{self.scheme}://{advertise_host}:{port}/#{self.token}'
-        self.join_url=f'{self.scheme}://{advertise_host}:{port}/'
+        self.url=f'{self.scheme}://{advertise_host}:{port}/det005#{self.token}'
+        self.join_url=f'{self.scheme}://{advertise_host}:{port}/det005'
         self.thread=threading.Thread(target=self.httpd.serve_forever,name='ACE CIC phone intake',daemon=True);self.thread.start()
     def notifications(self):
         with self.lock:events=list(self.events);self.events.clear()

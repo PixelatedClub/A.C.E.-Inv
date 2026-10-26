@@ -62,10 +62,15 @@ class LoanUiMixin:
             self._show_error('Scan or paste at least one barcode into the checkout list first.')
             return
 
-        window=tk.Toplevel(self);window.title('Loan queued items');window.transient(self);window.grab_set()
+        window=tk.Toplevel(self);window.title('Loan queued items');window.transient(self)
         form=ttk.Frame(window,padding=16);form.pack(fill='both',expand=True);form.columnconfigure(1,weight=1)
         cadet_name=self._compose_checkout_name()
         cadet_email=self.checkout_email_var.get().strip()
+        draft_key=str(self.standard_checkout_tab)
+        target=self.checkout_drafts[draft_key]
+        identity=tuple(target[k].get() for k in ('checkout_last_name_var','checkout_middle_initial_var','checkout_first_name_var','checkout_email_var'))
+        snapshot=[{'barcode_id':r['barcode_id'],'quantity':r['quantity']} for r in target['checkout_queue'].values()]
+        notes=self._get_text(target['checkout_notes_text'])
         queued_units=sum(int(row['quantity']) for row in self.checkout_queue.values())
         ttk.Label(form,text='Cadet').grid(row=0,column=0,sticky='w',pady=(0,6))
         ttk.Label(form,text=f'{cadet_name} | {cadet_email}',style='Accent.TLabel').grid(row=0,column=1,sticky='w',pady=(0,6))
@@ -77,15 +82,21 @@ class LoanUiMixin:
         ttk.Entry(form,textvariable=purpose,width=48).grid(row=4,column=1,sticky='ew',pady=8)
 
         def issue():
+            if draft_key not in self.checkout_drafts or identity!=tuple(target[k].get() for k in ('checkout_last_name_var','checkout_middle_initial_var','checkout_first_name_var','checkout_email_var')) or snapshot!=[{'barcode_id':r['barcode_id'],'quantity':r['quantity']} for r in target['checkout_queue'].values()] or notes!=self._get_text(target['checkout_notes_text']):
+                self._show_error('The original cadet draft changed or was closed. Reopen Loan Queued Items from that draft before approving.')
+                return
+            for line in snapshot:
+                item=self.service.get_item(line['barcode_id'])
+                reserved=sum(int(context['checkout_queue'].get(line['barcode_id'],{}).get('quantity',0)) for key,context in self.checkout_drafts.items() if key!=draft_key)
+                if not item or line['quantity']>item['available_quantity']-reserved:
+                    self._show_error('Stock is no longer available after other cadet queues. Review the original draft before approving.')
+                    return
             deadline=due.get()
             purpose_text=purpose.get()
-            line_items=[
-                {'barcode_id':row['barcode_id'],'quantity':row['quantity']}
-                for row in self.checkout_queue.values()
-            ]
+            line_items=snapshot
             def saved(processed_items):
                 total=sum(int(row['quantity']) for row in processed_items)
-                window.destroy();self._clear_checkout_form(clear_identity=False);self.refresh_all_views()
+                window.destroy();target['checkout_queue'].clear();target['checkout_scan_var'].set('');target['checkout_qty_var'].set('1');target['checkout_notes_text'].delete('1.0','end');self.refresh_all_views()
                 self._show_info(f'Loaned {total} unit(s) with return deadline {deadline}.')
             self._run_action(
                 lambda:self.service.checkout_items_bulk(
@@ -93,7 +104,7 @@ class LoanUiMixin:
                     cadet_name=cadet_name,
                     cadet_email=cadet_email,
                     approved_by=self.current_admin,
-                    condition_notes=self._get_text(self.checkout_notes_text),
+                    condition_notes=notes,
                     loan_due_date=deadline,
                     loan_purpose=purpose_text,
                 ),
@@ -106,7 +117,7 @@ class LoanUiMixin:
         ttk.Button(actions,text='Loan Queued Items',command=issue).pack(side='left')
 
     def _new_loan_dialog(self):
-        window=tk.Toplevel(self);window.title('Issue a temporary loan');window.transient(self);window.grab_set()
+        window=tk.Toplevel(self);window.title('Issue a temporary loan');window.transient(self)
         form=ttk.Frame(window,padding=16);form.pack(fill='both',expand=True);form.columnconfigure(1,weight=1)
         cadets=self.service.list_cadets()
         cadet_map={f"{r['full_name']} | {r['email']}":r for r in cadets}
@@ -160,7 +171,7 @@ class LoanUiMixin:
     def _change_loan_date(self):
         ids=[int(i) for i in self.loan_tree.selection()]
         if not ids:self._show_error('Select one or more loans first.');return
-        window=tk.Toplevel(self);window.title('Change loan deadline');window.transient(self);window.grab_set()
+        window=tk.Toplevel(self);window.title('Change loan deadline');window.transient(self)
         form=ttk.Frame(window,padding=16);form.pack()
         due=self._loan_date_controls(form)
         purpose=tk.StringVar(window,value='Deadline updated')

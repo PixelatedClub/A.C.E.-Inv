@@ -104,7 +104,7 @@ class CheckoutDraftTests(unittest.TestCase):
 
     def test_add_custom_item_can_open_barcode_generation_immediately(self):
         a=self.app;a._open_add_custom_item_dialog();a.update()
-        window=a.grab_current()
+        window=next(w for w in a.winfo_children() if w.winfo_class()=='Toplevel' and w.title()=='Add Custom Catalog Item')
         form=window.winfo_children()[0]
         widgets=form.winfo_children()
         entry=next(w for w in widgets if w.winfo_class()=='TEntry' and
@@ -119,6 +119,7 @@ class CheckoutDraftTests(unittest.TestCase):
         with patch.object(a,'_show_error') as error:
             next(w for w in buttons.winfo_children() if w.cget('text')=='Add Custom Item').invoke()
             a.update();error.assert_not_called()
-        self.assertEqual(a.grab_current().title(),'Generate Index Barcode')
+        barcode_window=next(w for w in a.winfo_children() if w.winfo_class()=='Toplevel' and w.title()=='Generate Index Barcode')
+        self.assertIsNone(a.grab_current())
         self.assertEqual(len(a.service.list_wings_catalog(search='New custom kit')),1)
-        a.grab_current().destroy()
+        barcode_window.destroy()

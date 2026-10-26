@@ -116,7 +116,7 @@ def record_count(app):
     barcode=app.item_barcode_var.get()
     if not barcode:app._show_error('Select the item you counted first.');return
     item=app.service.get_item(barcode)
-    window=tk.Toplevel(app);window.title('Record Physical Inventory Count');window.transient(app);window.grab_set()
+    window=tk.Toplevel(app);window.title('Record Physical Inventory Count');window.transient(app)
     form=ttk.Frame(window,padding=16);form.pack(fill='both',expand=True)
     ttk.Label(form,text=f"{item['item_name']} ({item['variant']})",wraplength=550,
         style='Title.TLabel').grid(row=0,column=0,columnspan=2,sticky='w',pady=(0,10))
@@ -130,14 +130,20 @@ def record_count(app):
     ttk.Entry(form,textvariable=note,width=36).grid(row=3,column=1,sticky='ew',padx=10)
     def saved(result):
         window.destroy();app._after_inventory_write(result)
-    ttk.Button(form,text='Record Count',command=lambda:app._run_action(
+    def save_count():
+        current=app.service.get_item(barcode)
+        if current is None or any(current[k]!=item[k] for k in ('total_quantity','available_quantity','updated_at')):
+            app._show_error('This item changed while the count window was open. Reopen it and verify your physical count before saving.')
+            return
+        app._run_action(
         lambda:app.service.record_available_count(barcode_id=barcode,available_quantity=count.get(),
             approved_by=app.current_admin,notes=note.get()),
-        success_message='Physical count saved. This item is now marked Counted.',on_success=saved)).grid(row=4,column=1,sticky='e',pady=12)
+        success_message='Physical count saved. This item is now marked Counted.',on_success=saved)
+    ttk.Button(form,text='Record Count',command=save_count).grid(row=4,column=1,sticky='e',pady=12)
 
 
 def create_manual_item(app):
-    window=tk.Toplevel(app);window.title('Create Manual Barcode');window.transient(app);window.grab_set()
+    window=tk.Toplevel(app);window.title('Create Manual Barcode');window.transient(app)
     form=ttk.Frame(window,padding=16);form.pack(fill='both',expand=True);form.columnconfigure(1,weight=1)
     ttk.Label(form,text='Use Barcode Generator for normal WINGS/custom stock.\nUse this dialog to retain a specific physical barcode.').grid(row=0,column=0,columnspan=2,pady=10)
     variables={}

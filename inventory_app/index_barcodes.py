@@ -15,7 +15,7 @@ class IndexBarcodeMixin:
         try:record=self.service.get_wings_catalog_item(item_no)
         except InventoryError as exc:
             self._show_error(str(exc));return
-        window=tk.Toplevel(self);window.title('Generate Index Barcode');window.transient(self);window.grab_set()
+        window=tk.Toplevel(self);window.title('Generate Index Barcode');window.transient(self)
         form=ttk.Frame(window,padding=18);form.pack(fill='both',expand=True)
         ttk.Label(form,text=f"{record['item_name']} ({record['size'] or ONE_SIZE_VARIANT})",wraplength=600,
             style='Title.TLabel').grid(row=0,column=0,columnspan=2,sticky='w',pady=(0,10))

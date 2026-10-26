@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 APP_TITLE = "A.C.E."
-APP_VERSION = "1.9.0-beta.1"
+APP_VERSION = "1.9.0-beta.2"
 PRODUCT_NAME = "A.C.E. Inventory System"
 PUBLISHER_BRAND = "Team Shapes"
 if getattr(sys, "frozen", False):

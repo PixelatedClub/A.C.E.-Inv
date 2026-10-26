@@ -3,6 +3,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from inventory_app.config import AppSettings
 from inventory_app.services import InventoryService,InventoryError
 from inventory_app.cic_server import CicSession
@@ -178,11 +179,16 @@ class CicServerTests(CicTests):
   if site:headers['Sec-Fetch-Site']=site
   body=None
   if data is not None:body=json.dumps(data).encode();headers['Content-Type']='application/json'
-  request=Request(self.session.join_url.rstrip('/')+path,data=body,headers=headers,method=method)
+  address=urlsplit(self.session.join_url)
+  request=Request(f'{address.scheme}://{address.netloc}'+path,data=body,headers=headers,method=method)
   try:
    with urlopen(request,timeout=10) as r:return r.status,r.read(),dict(r.headers)
   except HTTPError as e:return e.code,e.read(),dict(e.headers)
  def test_http_auth_origin_and_no_admin_routes(self):
+  self.assertEqual(len(self.session.code),6)
+  self.assertTrue(self.session.code.isdigit())
+  self.assertTrue(self.session.join_url.endswith('/det005'))
+  self.assertEqual(self.call('/det005',site='cross-site')[0],200)
   self.assertEqual(self.call('/',site='cross-site')[0],200)
   self.assertEqual(self.call('/api/catalog',token=self.session.token,site='cross-site')[0],403)
   self.assertEqual(self.call('/api/catalog')[0],401)

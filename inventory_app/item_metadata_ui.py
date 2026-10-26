@@ -20,7 +20,7 @@ def edit_metadata(app):
     with app.service.database.connect() as db:
         record=db.execute('SELECT * FROM item_metadata WHERE barcode_id=?',(barcode,)).fetchone()
     window=tk.Toplevel(app); window.title('Tags and image: '+barcode)
-    window.transient(app); window.grab_set()
+    window.transient(app)
     frame=ttk.Frame(window,padding=16); frame.pack(fill='both',expand=True)
     ttk.Label(frame,text=row['item_name']+' | '+row['variant']).pack(anchor='w')
     ttk.Label(frame,text='Category tags (automatic): '+row['category']+', '+row['item_type'],wraplength=600).pack(anchor='w',pady=5)

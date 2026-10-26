@@ -1,5 +1,13 @@
 # A.C.E. Changelog
 
+## 1.9.0-beta.2 - 2026-10-26
+
+- Shorten phone join codes to six digits; use a Det005-branded `/det005` join page while keeping existing root links supported.
+- Use non-intrusive CIC tab badges/status notifications instead of new popup windows or automatic navigation.
+- Create checkout tabs from the + button in the background, preserving the current form and focus.
+- Make routine editor/detail/report/tag/loan windows non-blocking; keep authentication and destructive confirmations protected.
+- Guard stale inventory and count edits. Bind queued-loan approval to its original cadet, notes and items even while working in another tab.
+
 ## 1.9.0-beta.1 - 2026-10-26
 
 - Add an ACE-hosted Python CIC phone session with a quantity-first bag-drag questionnaire, later size allocation, explicit None answers and a private submission receipt.
