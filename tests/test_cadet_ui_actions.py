@@ -33,19 +33,19 @@ class CadetUiActionTests(unittest.TestCase):
             cadet_cache={
                 1: {
                     "cadet_id": 1,
-                    "full_name": "Dawkins, C, Roman",
-                    "email": "rdc0053@auburn.edu",
+                    "full_name": "Example, C, Existing",
+                    "email": "existing@example.invalid",
                 }
             },
-            cadet_form_email_var=_Value("lzj0066@auburn.edu"),
-            cadet_search_var=_Value("Dawkins"),
+            cadet_form_email_var=_Value("new@example.invalid"),
+            cadet_search_var=_Value("Example"),
             cadet_tree=SimpleNamespace(
                 get_children=Mock(return_value=("25",)),
                 selection_set=Mock(),
                 see=Mock(),
             ),
             service=service,
-            _compose_cadet_form_name=Mock(return_value="Johnson, A, Luke"),
+            _compose_cadet_form_name=Mock(return_value="Example, A, New"),
             _run_action=_run_action,
             _show_error=Mock(),
             refresh_cadets=Mock(),
@@ -59,8 +59,8 @@ class CadetUiActionTests(unittest.TestCase):
         InventoryApp._save_cadet(app)
 
         app.service.save_cadet.assert_called_once_with(
-            cadet_name="Johnson, A, Luke",
-            cadet_email="lzj0066@auburn.edu",
+            cadet_name="Example, A, New",
+            cadet_email="new@example.invalid",
         )
         app.service.update_cadet.assert_not_called()
         self.assertEqual(app.selected_cadet_id, 25)
@@ -85,8 +85,8 @@ class CadetUiActionTests(unittest.TestCase):
         confirm.assert_called_once()
         app.service.update_cadet.assert_called_once_with(
             cadet_id=1,
-            cadet_name="Johnson, A, Luke",
-            cadet_email="lzj0066@auburn.edu",
+            cadet_name="Example, A, New",
+            cadet_email="new@example.invalid",
         )
         app.service.save_cadet.assert_not_called()
 

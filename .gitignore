@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-beta/
+.venv-build/
+beta_data/
 venv/
 
 # Local application data - never commit inventory or cadet records
@@ -28,6 +31,12 @@ release/*.zip
 release/SHA256SUMS.txt
 
 # Temporary and inspection files
+outputs/
+.env
+.env.*
+!.env.example
+shared_beta/profile.json
+shared_beta/profile.local.json
 tmp/
 *.inspect.ndjson
 *.log
@@ -37,3 +46,5 @@ tmp/
 .idea/
 .DS_Store
 Thumbs.db
+checkout_drafts.json
+checkout_drafts.json.tmp

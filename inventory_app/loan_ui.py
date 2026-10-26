@@ -6,8 +6,8 @@ from .barcode_utils import extract_scanned_barcode, open_file
 
 class LoanUiMixin:
     def _build_loans_tab(self):
-        self.loans_tab = ttk.Frame(self.checkout_notebook, padding=12)
-        self.checkout_notebook.add(self.loans_tab, text='Temporary Loans')
+        self.loans_tab = ttk.Frame(self.returns_notebook, padding=12)
+        self.returns_notebook.add(self.loans_tab, text='Temporary Loans')
         self.loans_tab.columnconfigure(0, weight=1)
         self.loans_tab.rowconfigure(3, weight=1)
         self.loan_search = tk.StringVar()
@@ -29,10 +29,10 @@ class LoanUiMixin:
         self.loan_tree.grid(row=0,column=0,sticky='nsew')
         self.loan_tree.tag_configure('overdue',background='#ffe2e2')
         ttk.Label(self.loans_tab,textvariable=self.loan_summary).grid(row=4,column=0,sticky='w',pady=8)
-        self.checkout_notebook.bind('<<NotebookTabChanged>>', self._on_checkout_workflow_changed, add='+')
+        self.returns_notebook.bind('<<NotebookTabChanged>>', self._on_checkout_workflow_changed, add='+')
 
     def _on_checkout_workflow_changed(self, _event=None):
-        if self.checkout_notebook.select() == str(self.loans_tab):
+        if self.returns_notebook.select() == str(self.loans_tab):
             self.refresh_loans()
 
     def refresh_loans(self):
@@ -85,7 +85,7 @@ class LoanUiMixin:
             ]
             def saved(processed_items):
                 total=sum(int(row['quantity']) for row in processed_items)
-                window.destroy();self.refresh_all_views();self._clear_checkout_form(clear_identity=False)
+                window.destroy();self._clear_checkout_form(clear_identity=False);self.refresh_all_views()
                 self._show_info(f'Loaned {total} unit(s) with return deadline {deadline}.')
             self._run_action(
                 lambda:self.service.checkout_items_bulk(
@@ -175,6 +175,7 @@ class LoanUiMixin:
         rows={str(r['transaction_id']):r for r in self.service.list_loans(include_closed=True)}
         cadet_id=rows[ids[0]]['cadet_id']
         self.notebook.select(self.returns_tab)
+        self.returns_notebook.select(self.standard_returns_tab)
         self.selected_return_cadet_id=cadet_id
         self._load_return_cadet_details(cadet_id)
 
@@ -206,6 +207,6 @@ class LoanUiMixin:
                 self.refresh_loans()
                 if overdue:
                     names=sorted(set(r['cadet_name'] for r in overdue))
-                    self._show_info(f"Loan reminder: {len(overdue)} overdue unit(s) across {len(names)} cadets.\n\n"+'\n'.join(names)+'\n\nOpen Checkout > Temporary Loans to review and Returns to record returns.')
+                    self._show_info(f"Loan reminder: {len(overdue)} overdue unit(s) across {len(names)} cadets.\n\n"+'\n'.join(names)+'\n\nOpen Returns > Temporary Loans to review.')
         finally:
             self.after(3600000,self._check_loan_reminders)

@@ -165,6 +165,67 @@ class AcquiredItemsTests(unittest.TestCase):
         self.assertEqual(history[0]["disposition"], "Returned")
         self.assertTrue(history[0]["closed_time"])
 
+    def test_undo_batch_survives_restart_and_preserves_later_restock(self):
+        barcode,cadet_id,ids=self._checkout_pt_gear(total_quantity=4,checkout_quantity=3)
+        with self.service.database.connect() as c:
+            before=[dict(r) for r in c.execute('SELECT * FROM transactions ORDER BY transaction_id')]
+        self.service.set_loan_deadline(ids,'2026-12-31','Training loan',self.admin)
+        with self.service.database.connect() as c:
+            original=[dict(r) for r in c.execute('SELECT * FROM transactions ORDER BY transaction_id')]
+        self.service.acquire_checked_out_items(cadet_id=cadet_id,transaction_ids=ids[:2],
+            disposition='Purchased',approved_by=self.admin,notes='Mistaken purchase')
+        self.service.restock_item(barcode_id=barcode,quantity=2,notes='Later shipment')
+        self.service=InventoryService(self.service.settings)
+        action=self.service.latest_acquisition(cadet_id)
+        self.assertEqual(action['transaction_ids'],sorted(ids[:2]))
+        result=self.service.undo_latest_acquisition(cadet_id=cadet_id,approved_by=self.admin,
+            expected_transaction_ids=action['transaction_ids'])
+        self.assertEqual(result['units'],2)
+        item=self.service.get_item(barcode)
+        self.assertEqual((item['total_quantity'],item['available_quantity']),(6,3))
+        with self.service.database.connect() as c:
+            self.assertEqual([dict(r) for r in c.execute('SELECT * FROM transactions ORDER BY transaction_id')],original)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM loan_events WHERE action='Acquisition undone'").fetchone()[0],2)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM acquisition_actions WHERE undone_at<>''").fetchone()[0],1)
+        self.assertEqual(self.service.get_report('Acquired / Purchased Items')[1],[])
+        report=self.service.get_weekly_activity_report_data()
+        self.assertEqual(report['summary']['recovered_units'],2)
+        with self.assertRaises(InventoryError):
+            self.service.undo_latest_acquisition(cadet_id=cadet_id,approved_by=self.admin)
+
+    def test_undo_rejects_changed_batch_without_partial_stock_restoration(self):
+        barcode,cadet_id,ids=self._checkout_pt_gear(total_quantity=2,checkout_quantity=2)
+        self.service.acquire_checked_out_items(cadet_id=cadet_id,transaction_ids=ids,
+            disposition='Acquired / Permanent Issue',approved_by=self.admin)
+        with self.service.database.connect() as c:
+            c.execute('UPDATE transactions SET condition_notes=? WHERE transaction_id=?',('Later correction',ids[0]));c.commit()
+        with self.assertRaisesRegex(InventoryError,'changed'):
+            self.service.undo_latest_acquisition(cadet_id=cadet_id,approved_by=self.admin)
+        self.assertEqual(self.service.get_item(barcode)['total_quantity'],0)
+        self.assertEqual(len(self.service.get_report('Acquired / Purchased Items')[1]),2)
+
+    def test_legacy_acquisition_uses_original_backup(self):
+        barcode,cadet_id,ids=self._checkout_pt_gear(total_quantity=2,checkout_quantity=1)
+        original=self.service.get_cadet_details(cadet_id)['current_items']
+        self.service.acquire_checked_out_items(cadet_id=cadet_id,transaction_ids=ids,
+            disposition='Purchased',approved_by=self.admin)
+        with self.service.database.connect() as c:
+            c.execute('DELETE FROM acquisition_actions');c.commit()
+        self.service.undo_latest_acquisition(cadet_id=cadet_id,approved_by=self.admin)
+        self.assertEqual((self.service.get_item(barcode)['total_quantity'],self.service.get_item(barcode)['available_quantity']),(2,1))
+        self.assertEqual(self.service.get_cadet_details(cadet_id)['current_items'],original)
+
+    def test_two_batches_in_same_second_undo_in_action_order(self):
+        from unittest.mock import patch
+        barcode,cadet_id,ids=self._checkout_pt_gear(total_quantity=2,checkout_quantity=2)
+        with patch('inventory_app.services.utc_now',return_value='2026-10-05T10:00:00-05:00'):
+            for transaction in (max(ids),min(ids)):
+                self.service.acquire_checked_out_items(cadet_id=cadet_id,transaction_ids=[transaction],
+                    disposition='Purchased',approved_by=self.admin)
+        self.assertEqual(self.service.latest_acquisition(cadet_id)['transaction_ids'],[min(ids)])
+        self.service.undo_latest_acquisition(cadet_id=cadet_id,approved_by=self.admin)
+        self.assertEqual(self.service.latest_acquisition(cadet_id)['transaction_ids'],[max(ids)])
+
 
 if __name__ == "__main__":
     unittest.main()

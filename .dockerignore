@@ -1,0 +1,6 @@
+**
+!shared_beta/
+!shared_beta/*.py
+!shared_beta/requirements.txt
+!shared_beta/requirements.lock.txt
+!shared_beta/Dockerfile

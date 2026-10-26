@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag, for example v1.7.0
+        description: Release tag, for example v1.8.8
         required: true
-        default: v1.7.0
+        default: v1.8.8
 
 permissions:
   contents: write
@@ -28,7 +28,7 @@ jobs:
 
       - name: Install build dependencies
         shell: pwsh
-        run: python -m pip install --upgrade pip pyinstaller -r requirements.txt
+        run: python -m pip install --upgrade pip pyinstaller -r requirements.txt -r shared_beta/requirements.txt
 
       - name: Run automated tests
         shell: pwsh

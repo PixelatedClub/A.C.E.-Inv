@@ -1,0 +1,11 @@
+{
+  "auth": "entra",
+  "url": "https://ACE-API-HOST",
+  "tenant_id": "REPLACE-WITH-AUBURN-TENANT-GUID",
+  "client_id": "REPLACE-WITH-DESKTOP-APP-GUID",
+  "api_client_id": "REPLACE-WITH-API-APP-GUID",
+  "sharepoint": {
+    "drive_id": "",
+    "folder_id": ""
+  }
+}

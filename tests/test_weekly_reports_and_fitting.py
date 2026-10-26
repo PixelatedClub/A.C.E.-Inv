@@ -302,6 +302,9 @@ class WeeklyReportsAndFittingTests(unittest.TestCase):
                 "Cadet Records",
                 "Current Loans",
                 "Data Quality",
+                "Uniform Families",
+                "Uniform Seasons",
+                "Current Inventory",
             ],
         )
         fitting_sheet = report["sheets"][4]

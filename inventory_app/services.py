@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import re
 import sqlite3
 import zipfile
@@ -19,10 +20,11 @@ from .deployment import create_transfer_installer, ensure_icon_file
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
 from .image_utils import read_png_dimensions, scaled_dimensions
 from .report_workbook import write_report_workbook
+from .item_metadata import enrich_items, inventory_analysis
 from .wings_catalog import WINGS_COLUMNS
 
 
-NAME_PATTERN = re.compile(r"^\s*([^,]+?)\s*,\s*([A-Za-z]{1,3})\.?\s*,\s*([^,]+?)\s*$")
+NAME_PATTERN = re.compile(r"^\s*([^,]+?)\s*,\s*(?:([A-Za-z]{1,3})\.?\s*,\s*|,\s*)?([^,]+?)\s*$")
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+$")
 MASTER_ADMIN_CODE = "Det005"
 MASTER_ADMIN_ROLE = "CADRE"
@@ -242,9 +244,11 @@ class _WingsHtmlTableParser(HTMLParser):
 
 
 from .loans import LoanServiceMixin
+from .acquisition_undo import AcquisitionUndoMixin
+from .catalog_inventory import CatalogInventoryMixin
 
 
-class InventoryService(LoanServiceMixin):
+class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryMixin):
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
         self.database = InventoryDatabase(settings)
@@ -259,6 +263,7 @@ class InventoryService(LoanServiceMixin):
         self._ensure_inventory_item_numbers()
         self._reconcile_packaging_variants()
         self._backfill_current_day_inventory_changes()
+        if getattr(self,'catalog_inventory_enabled',False):self.ensure_catalog_inventory()
 
     def _backfill_current_day_inventory_changes(self) -> int:
         """Recover today's new-item totals once when upgrading from pre-audit builds."""
@@ -1777,10 +1782,17 @@ class InventoryService(LoanServiceMixin):
                     OR variant LIKE ?
                     OR item_type LIKE ?
                     OR notes LIKE ?
+                    OR wings_item_no LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM barcode_aliases AS alias
+                        WHERE alias.canonical_barcode_id = items.barcode_id
+                          AND alias.alias_barcode_id = ? COLLATE NOCASE
+                    )
                 )
                 """
             )
-            params.extend([search_text] * 6)
+            params.extend([search_text] * 7)
+            params.append(search.strip())
 
         if status_filter and status_filter != "All":
             conditions.append("status = ?")
@@ -1807,7 +1819,7 @@ class InventoryService(LoanServiceMixin):
         """
         with self.database.connect() as connection:
             rows = connection.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        return enrich_items(self, [dict(row) for row in rows])
 
     def list_label_records(self, *, search: str = "", status_filter: str = "All") -> list[dict[str, Any]]:
         return self.list_items(search=search, status_filter=status_filter)
@@ -1876,8 +1888,9 @@ class InventoryService(LoanServiceMixin):
         item_name: str = "",
         notes: str = "",
         wings_item_no: str = "",
+        allow_zero: bool = False,
     ) -> dict[str, Any]:
-        units_per_barcode = self._validate_quantity(units_per_barcode, field_name="Units per barcode")
+        units_per_barcode = self._validate_quantity(units_per_barcode, field_name="Units per barcode", allow_zero=allow_zero)
         preview = self.preview_generated_barcode(
             category=category,
             variant=variant,
@@ -2086,7 +2099,7 @@ class InventoryService(LoanServiceMixin):
         if not barcode:
             raise InventoryError("Select a barcode to edit first.")
 
-        quantity = self._validate_quantity(total_quantity, field_name="Total quantity")
+        quantity = self._validate_quantity(total_quantity, field_name="Total quantity", allow_zero=True)
         category = self._clean_lookup(category, "Category")
         variant = self._clean_lookup(variant, "Variant")
         item_type = self._clean_lookup(item_type, "Item type")
@@ -2936,6 +2949,7 @@ class InventoryService(LoanServiceMixin):
         self.database.create_backup(reason="pre_acquisition")
         placeholders = ", ".join("?" for _ in cleaned_transaction_ids)
         with self.database.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
             cadet = connection.execute(
                 "SELECT cadet_id, full_name, email FROM cadets WHERE cadet_id = ?",
                 (int(cadet_id),),
@@ -2992,6 +3006,10 @@ class InventoryService(LoanServiceMixin):
                     )
 
             closed_at = utc_now()
+            undo_before = [dict(row) for row in connection.execute(
+                f'SELECT * FROM transactions WHERE transaction_id IN ({placeholders}) ORDER BY transaction_id',
+                cleaned_transaction_ids)]
+            undo_notes = {barcode: {'before': row['item_notes'] or ''} for barcode, row in item_rows.items()}
             reason = " ".join(str(notes).split())
             transaction_note = cleaned_disposition
             if reason:
@@ -3037,6 +3055,13 @@ class InventoryService(LoanServiceMixin):
                     ),
                 )
                 self._sync_item_state(connection, barcode)
+                undo_notes[barcode]['after'] = connection.execute(
+                    'SELECT notes FROM items WHERE barcode_id=?', (barcode,)).fetchone()[0] or ''
+            undo_after = [dict(row) for row in connection.execute(
+                f'SELECT * FROM transactions WHERE transaction_id IN ({placeholders}) ORDER BY transaction_id',
+                cleaned_transaction_ids)]
+            connection.execute('''INSERT INTO acquisition_actions(cadet_id,created_at,before_json,after_json,item_notes_json)
+                VALUES(?,?,?,?,?)''', (int(cadet_id),closed_at,json.dumps(undo_before),json.dumps(undo_after),json.dumps(undo_notes)))
             connection.commit()
 
         self.database.note_write()
@@ -3695,6 +3720,11 @@ class InventoryService(LoanServiceMixin):
             raise InventoryError("End date cannot be before start date.")
 
         with self.database.connect() as connection:
+            uncounted_baseline={row[0] for row in connection.execute('''SELECT DISTINCT a.barcode_id FROM inventory_changes a
+                WHERE a.action='Catalog Baseline Created' AND NOT EXISTS(
+                    SELECT 1 FROM inventory_count_state s WHERE s.barcode_id=a.barcode_id)''')}
+
+        with self.database.connect() as connection:
             change_rows = [
                 dict(row)
                 for row in connection.execute(
@@ -3803,6 +3833,7 @@ class InventoryService(LoanServiceMixin):
                 continue
             row = dict(raw_row)
             action = str(row.get("action") or "")
+            if action == 'Catalog Baseline Created':continue
             details = str(row.get("details") or "")
             lowered = f"{action} {details}".casefold()
             quantity_change = int(row.get("quantity_change") or 0)
@@ -3818,7 +3849,7 @@ class InventoryService(LoanServiceMixin):
                 activity_class = "Routine Inventory Add"
                 routine_units_added += quantity_change
                 net_units_recorded += quantity_change
-            elif quantity_change > 0 and "recover" in lowered:
+            elif quantity_change > 0 and ("recover" in lowered or action == "Acquisition Undone"):
                 activity_class = "Recovered Inventory Add"
                 recovered_units += quantity_change
                 net_units_recorded += quantity_change
@@ -3841,6 +3872,7 @@ class InventoryService(LoanServiceMixin):
                 continue
             row = dict(raw_row)
             barcode_id = str(row.get("barcode_id") or "").strip().upper()
+            if barcode_id in uncounted_baseline:continue
             if int(row.pop("is_wings") or 0):
                 if barcode_id in inferred_wings_barcodes:
                     row["id_status"] = "Official WINGS ID - verify"
@@ -3915,6 +3947,7 @@ class InventoryService(LoanServiceMixin):
         while current_day <= report_end:
             day_key = current_day.isoformat()
             day_changes = [row for row in filtered_changes if str(row.get("event_time") or "")[:10] == day_key]
+            day_changes = [row for row in day_changes if row.get('activity_class') != 'Barcode / Mapping Repair']
             daily_rows.append(
                 {
                     "Date": day_key,
@@ -4080,6 +4113,12 @@ class InventoryService(LoanServiceMixin):
                 "rows": quality_rows,
             },
         ]
+        current_inventory = enrich_items(self, item_rows)
+        sheets.extend(inventory_analysis(current_inventory))
+        sheets.append(readable_sheet('Current Inventory', [
+            'barcode_id','wings_item_no','item_name','category','variant','item_type',
+            'family','season','tags','status','total_quantity','available_quantity','count_status','counted_at'],
+            [{**row, 'tags': ', '.join(row['tags'])} for row in current_inventory]))
         return {
             "start_date": report_start.isoformat(),
             "end_date": report_end.isoformat(),
@@ -4128,6 +4167,23 @@ class InventoryService(LoanServiceMixin):
             },
             "sheets": sheets,
         }
+
+    def export_activity_html(
+        self, *, start_date="", end_date="", bluf="", major_activities="",
+        open_after=True, filename_stem="",
+    ) -> Path:
+        from .report_html import write_activity_html
+        report = self.get_weekly_activity_report_data(
+            start_date=start_date, end_date=end_date, bluf=bluf,
+            major_activities=major_activities,
+        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = Path(filename_stem).name if filename_stem.strip() else f"ACE_activity_report_{report['start_date']}_to_{report['end_date']}"
+        export_path = self.settings.database_path.parent / "exports" / f"{stem}_{timestamp}.html"
+        write_activity_html(export_path, report)
+        if open_after:
+            open_file(export_path)
+        return export_path
 
     def export_weekly_activity_spreadsheet(
         self,
@@ -5403,10 +5459,15 @@ class InventoryService(LoanServiceMixin):
     def _upsert_cadet(self, connection: sqlite3.Connection, full_name: str, email: str) -> dict[str, Any]:
         name, normalized_email = self._validate_cadet_identity(full_name, email)
         existing = connection.execute(
-            "SELECT cadet_id FROM cadets WHERE lower(email) = lower(?)",
+            "SELECT cadet_id, full_name FROM cadets WHERE lower(email) = lower(?)",
             (normalized_email,),
         ).fetchone()
         if existing:
+            supplied=NAME_PATTERN.match(name)
+            saved=NAME_PATTERN.match(existing['full_name'])
+            if supplied and saved and not supplied.group(2) and saved.group(2) and all(
+                supplied.group(k).casefold()==saved.group(k).casefold() for k in (1,3)):
+                name=existing['full_name']
             connection.execute(
                 """
                 UPDATE cadets
@@ -5598,13 +5659,14 @@ class InventoryService(LoanServiceMixin):
         raise InventoryError("No unused A.C.E. barcode numbers remain.")
 
     @staticmethod
-    def _validate_quantity(quantity: int, *, field_name: str = "Quantity") -> int:
+    def _validate_quantity(quantity: int, *, field_name: str = "Quantity", allow_zero: bool = False) -> int:
         try:
             value = int(quantity)
         except (TypeError, ValueError) as exc:
             raise InventoryError(f"{field_name} must be a whole number.") from exc
-        if value < 1:
-            raise InventoryError(f"{field_name} must be at least 1.")
+        minimum = 0 if allow_zero else 1
+        if value < minimum:
+            raise InventoryError(f"{field_name} must be at least {minimum}.")
         return value
 
     @staticmethod
@@ -5654,12 +5716,12 @@ class InventoryService(LoanServiceMixin):
 
         match = NAME_PATTERN.match(full_name)
         if not match:
-            raise InventoryError("Cadet name must use the format 'Last, MI, First'.")
+            raise InventoryError("Enter first and last name. Middle initials are optional ('Last, First' or 'Last, MI, First').")
 
         last_name = self._smart_title(match.group(1))
-        middle_initials = match.group(2).replace(".", "").upper()
+        middle_initials = (match.group(2) or '').replace(".", "").upper()
         first_name = self._smart_title(match.group(3))
-        normalized_name = f"{last_name}, {middle_initials}, {first_name}"
+        normalized_name = f"{last_name}, {middle_initials}, {first_name}" if middle_initials else f"{last_name}, {first_name}"
         return normalized_name, email_value
 
     @staticmethod

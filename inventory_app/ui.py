@@ -29,6 +29,7 @@ from .config import (
 )
 from .services import InventoryError, InventoryService, ONE_SIZE_VARIANT, REPORT_COLUMN_LABELS
 from .loan_ui import LoanUiMixin
+from .layout import ResizableSplit
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
 from .image_utils import read_gif_frame_durations
 from .wings_catalog import WINGS_COLUMNS
@@ -145,11 +146,15 @@ CATALOG_ALIASES = {
 }
 
 
-class InventoryApp(LoanUiMixin, tk.Tk):
-    def __init__(self, settings: AppSettings) -> None:
+from .checkout_drafts import CheckoutDraftMixin
+from .index_barcodes import IndexBarcodeMixin
+
+class InventoryApp(CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
+    def __init__(self, settings: AppSettings, *, preload_catalog: bool = False) -> None:
         super().__init__()
         self.settings = settings
         self.service = InventoryService(settings)
+        if preload_catalog:self.service.enable_catalog_inventory()
         self.current_admin: dict[str, Any] | None = None
         self.current_checkout_barcode: str | None = None
         self.generator_preview_record: dict[str, Any] | None = None
@@ -187,8 +192,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.startup_current_frame_index = 0
 
         self.title(APP_TITLE)
-        self.geometry("1500x920")
-        self.minsize(1240, 760)
+        self.geometry(f"{min(1500,self.winfo_screenwidth()-80)}x{min(920,self.winfo_screenheight()-100)}")
+        self.minsize(1000, 640)
         self._configure_window_icon()
         self._configure_style()
         self._create_variables()
@@ -470,6 +475,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self._build_cadet_fitting_tab()
         self._build_reports_tab()
         self._build_settings_tab()
+        from .shortcuts import install_shortcuts
+        install_shortcuts(self)
 
         status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w")
         status_bar.grid(row=1, column=0, sticky="ew", padx=10, pady=(6, 10))
@@ -537,8 +544,12 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.generator_tab.columnconfigure(1, weight=1)
         self.generator_tab.rowconfigure(2, weight=1)
 
-        config_frame = ttk.LabelFrame(self.generator_tab, text="Generate Barcode Labels", padding=12)
-        config_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.generator_stack = ResizableSplit(self.generator_tab,orient=tk.VERTICAL,fraction=0.55)
+        self.generator_stack.grid(row=0,column=0,rowspan=3,columnspan=2,sticky='nsew')
+        self.generator_split = ResizableSplit(self.generator_stack,fraction=0.5)
+        self.generator_stack.add(self.generator_split,minsize=280,stretch='always')
+        config_frame = ttk.LabelFrame(self.generator_split, text="Generate Barcode Labels", padding=12)
+        self.generator_split.add(config_frame,minsize=350,stretch='always')
         config_frame.columnconfigure(1, weight=1)
 
         ttk.Label(config_frame, text="Quick Find").grid(row=0, column=0, sticky="w")
@@ -620,8 +631,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             row=0, column=3, sticky="ew", padx=(4, 0)
         )
 
-        result_frame = ttk.LabelFrame(self.generator_tab, text="Preview / Last Saved Barcode", padding=10)
-        result_frame.grid(row=0, column=1, sticky="nsew")
+        result_frame = ttk.LabelFrame(self.generator_split, text="Preview / Last Saved Barcode", padding=10)
+        self.generator_split.add(result_frame,minsize=250,stretch='always')
         result_frame.columnconfigure(0, weight=1)
         result_frame.rowconfigure(1, weight=1)
 
@@ -639,8 +650,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         )
         self.generator_tree.grid(row=0, column=0, sticky="nsew")
 
-        library_frame = ttk.LabelFrame(self.generator_tab, text="Central Label Library", padding=10)
-        library_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        library_frame = ttk.LabelFrame(self.generator_stack, text="Central Label Library", padding=10)
+        self.generator_stack.add(library_frame,minsize=180,stretch='always')
         library_frame.columnconfigure(1, weight=1)
         library_frame.rowconfigure(1, weight=1)
 
@@ -795,6 +806,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             text="Restore Hidden Items",
             command=self._restore_hidden_index_items,
         ).grid(row=0, column=4)
+        ttk.Button(index_actions,text='Generate Selected Barcode',
+            command=self._generate_selected_index_barcode).grid(row=1,column=1,columnspan=2,sticky='w',pady=(6,0))
 
         editor = ttk.LabelFrame(self.index_tab, text="Add or Edit Custom Index Item", padding=10)
         editor.grid(row=5, column=0, sticky="ew", pady=(10, 0))
@@ -898,19 +911,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         )
         self.wings_export_tree.grid(row=0, column=0, sticky="nsew")
 
-    def _build_checkout_tab(self) -> None:
-        self.checkout_tab.columnconfigure(0, weight=1)
-        self.checkout_tab.rowconfigure(0, weight=1)
-
-        self.checkout_notebook = ttk.Notebook(self.checkout_tab)
-        self.checkout_notebook.grid(row=0, column=0, sticky="nsew")
-
-        self.standard_checkout_tab = ttk.Frame(self.checkout_notebook, padding=8)
-        self.standard_checkout_tab.columnconfigure(0, weight=1)
-        self.standard_checkout_tab.rowconfigure(0, weight=1)
-        self.checkout_notebook.add(self.standard_checkout_tab, text="Standard Checkout")
-
-        checkout_frame = ttk.LabelFrame(self.standard_checkout_tab, text="Checkout Items To A Cadet", padding=12)
+    def _build_checkout_workspace(self, parent) -> None:
+        checkout_frame = ttk.LabelFrame(parent, text="Checkout Items To A Cadet", padding=12)
         checkout_frame.grid(row=0, column=0, sticky="nsew")
         checkout_frame.columnconfigure(0, weight=1)
         checkout_frame.rowconfigure(3, weight=1)
@@ -944,6 +946,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             selectmode="extended",
         )
         self.checkout_queue_tree.grid(row=0, column=0, sticky="nsew")
+        self.checkout_queue_tree.configure(height=4)
 
         checkout_queue_actions = ttk.Frame(checkout_frame)
         checkout_queue_actions.grid(row=4, column=0, sticky="ew", pady=(8, 10))
@@ -970,14 +973,14 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.checkout_first_name_entry = ttk.Entry(name_frame, textvariable=self.checkout_first_name_var)
         self.checkout_first_name_entry.grid(row=0, column=2, sticky="ew")
         ttk.Label(name_frame, text="Last").grid(row=1, column=0, sticky="w")
-        ttk.Label(name_frame, text="MI").grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Label(name_frame, text="MI (optional)").grid(row=1, column=1, sticky="w", padx=6)
         ttk.Label(name_frame, text="First").grid(row=1, column=2, sticky="w")
 
         ttk.Label(checkout_frame, text="Cadet Email").grid(row=7, column=0, sticky="w")
         ttk.Entry(checkout_frame, textvariable=self.checkout_email_var).grid(row=8, column=0, sticky="ew", pady=3)
 
         ttk.Label(checkout_frame, text="Checkout Notes").grid(row=9, column=0, sticky="nw", pady=(8, 0))
-        self.checkout_notes_text = tk.Text(checkout_frame, height=8, wrap="word")
+        self.checkout_notes_text = tk.Text(checkout_frame, height=3, wrap="word")
         self.checkout_notes_text.grid(row=10, column=0, sticky="ew", pady=(6, 0))
 
         checkout_actions = ttk.Frame(checkout_frame)
@@ -998,12 +1001,20 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         )
 
     def _build_returns_tab(self) -> None:
+        self.returns_notebook = ttk.Notebook(self.returns_tab)
+        self.returns_notebook.grid(row=0,column=0,columnspan=2,sticky='nsew')
+        self.standard_returns_tab = ttk.Frame(self.returns_notebook,padding=8)
+        self.standard_returns_tab.columnconfigure(0,weight=1)
+        self.standard_returns_tab.rowconfigure(0,weight=1)
+        self.returns_notebook.add(self.standard_returns_tab,text='Return Items')
         self.returns_tab.columnconfigure(0, weight=1)
         self.returns_tab.columnconfigure(1, weight=2)
         self.returns_tab.rowconfigure(0, weight=1)
 
-        cadet_frame = ttk.LabelFrame(self.returns_tab, text="1. Who Is Returning Items?", padding=12)
-        cadet_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.returns_split = ResizableSplit(self.standard_returns_tab,fraction=0.35)
+        self.returns_split.grid(row=0,column=0,columnspan=2,sticky='nsew')
+        cadet_frame = ttk.LabelFrame(self.returns_split, text="1. Who Is Returning Items?", padding=12)
+        self.returns_split.add(cadet_frame,minsize=260,stretch='always')
         cadet_frame.columnconfigure(0, weight=1)
         cadet_frame.rowconfigure(2, weight=1)
 
@@ -1038,11 +1049,11 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.return_cadet_tree.bind("<<TreeviewSelect>>", self._on_return_cadet_selected)
 
         return_frame = ttk.LabelFrame(
-            self.returns_tab,
+            self.returns_split,
             text="2. Select Items From That Cadet's Inventory",
             padding=12,
         )
-        return_frame.grid(row=0, column=1, sticky="nsew")
+        self.returns_split.add(return_frame,minsize=350,stretch='always')
         return_frame.columnconfigure(0, weight=1)
         return_frame.rowconfigure(3, weight=1)
 
@@ -1148,7 +1159,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         ttk.Entry(cadet_name_frame, textvariable=self.cadet_middle_initial_var, width=5).grid(row=0, column=1, sticky="ew", padx=6)
         ttk.Entry(cadet_name_frame, textvariable=self.cadet_first_name_var).grid(row=0, column=2, sticky="ew")
         ttk.Label(cadet_name_frame, text="Last").grid(row=1, column=0, sticky="w")
-        ttk.Label(cadet_name_frame, text="MI").grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Label(cadet_name_frame, text="MI (optional)").grid(row=1, column=1, sticky="w", padx=6)
         ttk.Label(cadet_name_frame, text="First").grid(row=1, column=2, sticky="w")
 
         ttk.Label(form_frame, text="Email").grid(row=0, column=2, sticky="w")
@@ -1165,8 +1176,10 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         ttk.Button(cadet_actions, text="Export Cadet History", command=self._export_selected_cadet_history).grid(row=0, column=4, padx=(0, 6))
         ttk.Button(cadet_actions, text="Delete Cadet", command=self._delete_selected_cadet).grid(row=0, column=5)
 
-        left_frame = ttk.LabelFrame(self.cadets_tab, text="Saved Cadets", padding=10)
-        left_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        self.cadets_split = ResizableSplit(self.cadets_tab,fraction=0.35)
+        self.cadets_split.grid(row=1,column=0,columnspan=2,sticky='nsew')
+        left_frame = ttk.LabelFrame(self.cadets_split, text="Saved Cadets", padding=10)
+        self.cadets_split.add(left_frame,minsize=260,stretch='always')
         left_frame.columnconfigure(1, weight=1)
         left_frame.rowconfigure(1, weight=1)
 
@@ -1197,8 +1210,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.cadet_tree.grid(row=0, column=0, sticky="nsew")
         self.cadet_tree.bind("<<TreeviewSelect>>", self._on_cadet_selected)
 
-        right_frame = ttk.LabelFrame(self.cadets_tab, text="Cadet Issue History", padding=10)
-        right_frame.grid(row=1, column=1, sticky="nsew")
+        right_frame = ttk.LabelFrame(self.cadets_split, text="Cadet Issue History", padding=10)
+        self.cadets_split.add(right_frame,minsize=350,stretch='always')
         right_frame.columnconfigure(0, weight=1)
         right_frame.rowconfigure(1, weight=1)
         right_frame.rowconfigure(3, weight=1)
@@ -1251,6 +1264,11 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         history_actions.columnconfigure(1, weight=1)
         ttk.Button(
             history_actions,
+            text="Undo Last Acquired / Purchased",
+            command=self._undo_last_cadet_acquisition,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(
+            history_actions,
             text="View Selected Transaction",
             command=self._view_selected_cadet_history_entry,
         ).grid(row=0, column=0, sticky="w")
@@ -1297,14 +1315,14 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
-        content = ttk.Frame(self.cadet_fitting_tab)
+        content = self.fitting_split = ResizableSplit(self.cadet_fitting_tab,fraction=0.3)
         content.grid(row=2, column=0, sticky="nsew")
         content.columnconfigure(0, weight=1)
         content.columnconfigure(1, weight=3)
         content.rowconfigure(0, weight=1)
 
         cadet_frame = ttk.LabelFrame(content, text="Saved Cadets", padding=10)
-        cadet_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        content.add(cadet_frame,minsize=260,stretch='always')
         cadet_frame.columnconfigure(1, weight=1)
         cadet_frame.rowconfigure(1, weight=1)
         ttk.Label(cadet_frame, text="Search").grid(row=0, column=0, sticky="w")
@@ -1326,7 +1344,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.fitting_cadet_tree.bind("<<TreeviewSelect>>", self._on_fitting_cadet_selected)
 
         sizes_frame = ttk.LabelFrame(content, text="Selected Cadet Fitting Profile", padding=10)
-        sizes_frame.grid(row=0, column=1, sticky="nsew")
+        content.add(sizes_frame,minsize=400,stretch='always')
         sizes_frame.columnconfigure(0, weight=1)
         sizes_frame.rowconfigure(1, weight=1)
         sizes_frame.rowconfigure(5, weight=1)
@@ -1494,7 +1512,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         report_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_report())
 
         ttk.Button(top, text="Refresh Report", command=self.refresh_report).grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(top, text="Export Readable Excel", command=self._export_report_spreadsheet).grid(
+        ttk.Button(top, text="Generate Full Report", command=self._generate_weekly_report).grid(
             row=0, column=3, padx=(0, 6)
         )
         ttk.Button(top, text="Export CSV", command=self._export_report).grid(
@@ -1530,7 +1548,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         ttk.Button(weekly_controls, text='Previous Week Report', command=self._monday_report).grid(row=1, column=0, pady=(8, 0), sticky='w')
         ttk.Button(
             weekly_controls,
-            text="Generate Date-Range Report",
+            text="Generate Full Date-Range Report",
             command=self._generate_weekly_report,
         ).grid(row=0, column=0, padx=(0, 10))
         ttk.Label(
@@ -1572,7 +1590,9 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         ttk.Label(
             frame,
             text="Keep the database on the flash drive path you want to carry between laptops.",
-        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        from .shortcuts import show_shortcut_guide
+        ttk.Button(frame,text='Keyboard Shortcuts...',command=lambda:show_shortcut_guide(self)).grid(row=0,column=2,sticky='e')
 
         ttk.Label(frame, text="Organization Name").grid(row=1, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.settings_org_name_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
@@ -1697,6 +1717,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         )
 
     def refresh_all_views(self) -> None:
+        if getattr(self.service,'catalog_inventory_enabled',False):self.service.ensure_catalog_inventory()
         self.refresh_loans()
         self._populate_catalog_values()
         self.refresh_dashboard()
@@ -1710,6 +1731,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.refresh_report()
         self.refresh_admin_codes()
         self._update_generator_preview()
+        if hasattr(self,'checkout_drafts'):self._refresh_checkout_draft_stock()
         self._set_status(f"Database: {self.settings.database_path}")
 
     def refresh_index(self) -> None:
@@ -1869,7 +1891,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         window.minsize(820, 360)
         self.update_idletasks()
         dialog_width = 940
-        dialog_height = 390
+        dialog_height = 460
         dialog_x = self.winfo_rootx() + max(0, (self.winfo_width() - dialog_width) // 2)
         dialog_y = self.winfo_rooty() + max(0, (self.winfo_height() - dialog_height) // 2)
         window.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
@@ -1986,7 +2008,10 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 8))
 
         buttons = ttk.Frame(form)
-        buttons.grid(row=6, column=0, columnspan=4, sticky="e", pady=(8, 0))
+        generate_after_save = tk.BooleanVar(window,value=False)
+        ttk.Checkbutton(form,text='Add stock or print a label after saving',
+            variable=generate_after_save).grid(row=6,column=0,columnspan=4,sticky='w',pady=6)
+        buttons.grid(row=7, column=0, columnspan=4, sticky="e", pady=(8, 0))
 
         def save_wings_item() -> None:
             try:
@@ -2004,6 +2029,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
                     saved_item_no = self.service.add_custom_catalog_item(**fields)
                 else:
                     saved_item_no = self.service.add_wings_catalog_item(item_no=item_no_var.get(), **fields)
+                self.service.ensure_catalog_inventory(item_nos=[saved_item_no])
             except InventoryError as exc:
                 messagebox.showerror("WINGS Item Error", str(exc), parent=window)
                 return
@@ -2011,10 +2037,13 @@ class InventoryApp(LoanUiMixin, tk.Tk):
                 messagebox.showerror("WINGS Item Error", f"Unexpected error: {exc}", parent=window)
                 return
             window.destroy()
-            self.refresh_index()
+            self.refresh_all_views()
             item_kind = "custom" if custom else "WINGS"
             self._set_status(f"Added {item_kind} catalog item {saved_item_no}.")
-            self._show_info(f"{item_kind.title()} item {saved_item_no} was added to the Index and Quick Find.")
+            if generate_after_save.get():
+                self._show_catalog_barcode_dialog(saved_item_no)
+            else:
+                self._show_info(f"{item_kind.title()} item {saved_item_no} is ready in Items with a barcode and zero stock.")
 
         ttk.Button(buttons, text="Cancel", command=window.destroy).grid(row=0, column=0, padx=(0, 6))
         ttk.Button(
@@ -2117,6 +2146,18 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             search=self.item_search_var.get(),
             status_filter=self.item_status_filter_var.get(),
         )
+        from .item_metadata import normalize_tags
+        try:
+            requested_tags = normalize_tags(self.item_tag_filter_var.get()) if hasattr(self,'item_tag_filter_var') else []
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+        rows = [row for row in rows if all(tag in row.get('tags',[]) for tag in requested_tags)]
+        count_filter=self.item_count_filter_var.get() if hasattr(self,'item_count_filter_var') else 'All counts'
+        if count_filter in ('Not counted','Counted'):
+            rows=[row for row in rows if row['count_status']==count_filter]
+        elif count_filter=='Counted zero':
+            rows=[row for row in rows if row['count_status']=='Counted' and row.get('last_count_available')==0]
         self.item_cache = {row["barcode_id"]: row for row in rows}
         self._populate_tree(
             self.items_tree,
@@ -2130,11 +2171,13 @@ class InventoryApp(LoanUiMixin, tk.Tk):
                 "status",
                 "total_quantity",
                 "available_quantity",
+                "count_status",
             ],
             rows,
         )
         self.item_list_summary_var.set(
-            f"Showing {len(rows)} barcode line(s). Select rows to copy barcodes or manage the first selected item."
+            f"Showing {len(rows)} items: {sum(row['count_status']=='Not counted' for row in rows)} not counted, "
+            f"{sum(row['count_status']=='Counted' for row in rows)} counted."
         )
 
     def refresh_report(self) -> None:
@@ -2237,12 +2280,11 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.report_start_date_var.set(report_details["start_date"])
         self.report_end_date_var.set(report_details["end_date"])
         self._run_action(
-            lambda: self.service.export_weekly_activity_spreadsheet(
+            lambda: self.service.export_activity_html(
                 start_date=report_details["start_date"],
                 end_date=report_details["end_date"],
                 bluf=report_details["bluf"],
                 major_activities=report_details["major_activities"],
-                coa_validation=report_details["coa_validation"],
                 open_after=True,
             ),
             success_message="Weekly activity report generated and opened.",
@@ -2270,7 +2312,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(0, weight=1)
         container.columnconfigure(0, weight=1)
-        for row_index in (4, 6, 8):
+        for row_index in (4, 6):
             container.rowconfigure(row_index, weight=1)
 
         ttk.Label(container, text="Generate A.C.E. Activity Report", style="Title.TLabel").grid(
@@ -2278,7 +2320,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         )
         ttk.Label(
             container,
-            text="The activity counts and detail tabs are filled automatically. Add the leadership context you want shown on the summary sheet.",
+            text="Generate a browser report with the full activity, inventory, loan and cadet sections. Add optional context for BLUF and Major Activities.",
             style="Subtitle.TLabel",
             wraplength=730,
         ).grid(row=1, column=0, sticky="ew", pady=(0, 12))
@@ -2306,13 +2348,6 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         activities_text.grid(row=6, column=0, sticky="nsew", pady=(0, 10))
         activities_text.insert("1.0", self.weekly_report_narrative["major_activities"])
 
-        ttk.Label(container, text="COA / Validation").grid(
-            row=7, column=0, sticky="w", pady=(0, 4)
-        )
-        coa_text = tk.Text(container, height=5, wrap="word", bg="white", fg="#0f172a")
-        coa_text.grid(row=8, column=0, sticky="nsew")
-        coa_text.insert("1.0", self.weekly_report_narrative["coa_validation"])
-
         button_frame = ttk.Frame(container)
         button_frame.grid(row=9, column=0, sticky="e", pady=(14, 0))
 
@@ -2333,13 +2368,11 @@ class InventoryApp(LoanUiMixin, tk.Tk):
                 "end_date": end_value,
                 "bluf": bluf_text.get("1.0", "end-1c").strip(),
                 "major_activities": activities_text.get("1.0", "end-1c").strip(),
-                "coa_validation": coa_text.get("1.0", "end-1c").strip(),
             }
             self.weekly_report_narrative.update(
                 {
                     "bluf": payload["bluf"],
                     "major_activities": payload["major_activities"],
-                    "coa_validation": payload["coa_validation"],
                 }
             )
             result["value"] = payload
@@ -2348,7 +2381,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).grid(
             row=0, column=0, padx=(0, 8)
         )
-        ttk.Button(button_frame, text="Generate and Open Excel", command=generate).grid(
+        ttk.Button(button_frame, text="Generate and Open Report", command=generate).grid(
             row=0, column=1
         )
         dialog.bind("<Control-Return>", lambda _event: generate())
@@ -3579,6 +3612,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         parts = [part.strip() for part in full_name.split(",")]
         if len(parts) == 3:
             return parts[0], parts[1], parts[2]
+        if len(parts) == 2:
+            return parts[0], '', parts[1]
         return "", "", ""
 
     def _compose_checkout_name(self) -> str:
@@ -3597,7 +3632,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
 
     @staticmethod
     def _compose_name(last_name: str, middle_initial: str, first_name: str) -> str:
-        return f"{last_name.strip()}, {middle_initial.strip()}, {first_name.strip()}"
+        return (f"{last_name.strip()}, {middle_initial.strip()}, {first_name.strip()}" if middle_initial.strip()
+            else f"{last_name.strip()}, {first_name.strip()}")
 
     def _load_cadet_details(self, cadet_id: int) -> None:
         details = self.service.get_cadet_details(cadet_id)
@@ -3809,6 +3845,30 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             on_success=on_success,
         )
 
+    def _undo_last_cadet_acquisition(self) -> None:
+        if not self.selected_cadet_id:
+            self._show_error("Select a saved cadet first.")
+            return
+        cadet_id = int(self.selected_cadet_id)
+        action = self.service.latest_acquisition(cadet_id)
+        if action is None:
+            self._show_error("This cadet has no acquired or purchased items to undo.")
+            return
+        items = '\n'.join(f"{row['item_name']} ({row['variant']})" for row in action['items'])
+        if not messagebox.askyesno("Undo Acquired / Purchased",
+            f"Undo {action['disposition']} for {action['cadet_name']}?\n\n{items}\n\n"
+            "These items will return to the cadet's open checkouts. Inventory totals will be restored.", parent=self):
+            return
+        def on_success(_result):
+            self.refresh_all_views()
+            if self.selected_cadet_id == cadet_id:
+                self._load_cadet_details(cadet_id)
+        self._run_action(
+            lambda: self.service.undo_latest_acquisition(cadet_id=cadet_id,
+                approved_by=self.current_admin, expected_transaction_ids=action['transaction_ids']),
+            success_message="Acquisition undone. The original checkouts and inventory totals were restored.",
+            on_success=on_success)
+
     def _prompt_acquisition_disposition(self, selected_units: int) -> tuple[str, str] | None:
         result: dict[str, tuple[str, str]] = {}
         dialog = tk.Toplevel(self)
@@ -3997,6 +4057,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         if not row:
             self._show_error("Selected cadet is no longer available.")
             return
+        self._open_checkout_for_cadet(row)
         last_name, middle_initial, first_name = self._split_name(row["full_name"])
         self.checkout_last_name_var.set(last_name)
         self.checkout_middle_initial_var.set(middle_initial)
@@ -4658,7 +4719,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self._set_text(self.item_notes_text, "")
         self.item_detail_var.set(f"{row['item_name']}\n\nBarcode: {row['barcode_id']}\nWINGS / Local #: {row.get('wings_item_no') or 'Not assigned'}\nCategory: {row['category']}\nSize / Variant: {row['variant']}\nType: {row['item_type']}\n\nCurrent notes: {str(row.get('notes') or 'None')[:350]}")
         self.item_form_status_var.set(
-            f"Status: {row['status']} | Available {row['available_quantity']} / Total {row['total_quantity']}"
+            f"Status: {row['status']} | Available {row['available_quantity']} / Total {row['total_quantity']} | {row['count_status']}"
         )
 
     def _clear_item_form(self) -> None:
@@ -4875,11 +4936,13 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             self._show_error(f"{item['status']} items cannot be checked out.")
             return
 
+        barcode = str(item['barcode_id'])
         existing_quantity = int(self.checkout_queue.get(barcode, {}).get("quantity", 0))
-        if int(item["available_quantity"]) < existing_quantity + quantity:
+        reserved = self._other_draft_units(barcode) if hasattr(self, 'checkout_drafts') else 0
+        if int(item["available_quantity"]) < existing_quantity + quantity + reserved:
             self._show_error(
                 f"Only {item['available_quantity']} unit(s) of {barcode} are currently available. "
-                "Reduce the requested quantity or restock first."
+                f"{reserved} unit(s) are queued in other cadet tabs. Reduce the requested quantity or restock first."
             )
             return
 
@@ -4908,6 +4971,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
             ["barcode_id", "item_name", "category", "variant", "item_type", "available_quantity", "quantity"],
             list(self.checkout_queue.values()),
         )
+        if hasattr(self,'checkout_drafts'):self._schedule_checkout_draft_save()
 
     def _remove_selected_checkout_queue(self) -> None:
         selected_ids = self.checkout_queue_tree.selection()
@@ -4940,8 +5004,8 @@ class InventoryApp(LoanUiMixin, tk.Tk):
 
         def on_success(processed_items: list[dict[str, Any]]) -> None:
             total_units = sum(int(row["quantity"]) for row in processed_items)
-            self.refresh_all_views()
             self._clear_checkout_form(clear_identity=False)
+            self.refresh_all_views()
             self._show_info(
                 f"Checked out {total_units} unit(s) across {len(processed_items)} barcode line(s)."
             )
@@ -4985,6 +5049,7 @@ class InventoryApp(LoanUiMixin, tk.Tk):
         self.checkout_summary_var.set("Scan or paste a barcode and press Enter to add it to the checkout list.")
         self._set_text(self.checkout_notes_text, "")
         self._update_checkout_queue_tree()
+        if hasattr(self,'checkout_drafts'):self._save_checkout_drafts()
         self._focus_checkout_scan()
 
     def _on_return_cadet_selected(self, _event: tk.Event | None = None) -> None:
@@ -5582,6 +5647,9 @@ A.C.E. Manual
 - Item numbers are sorted numerically and preserved in ten-digit WINGS format.
 
 6. Checkout
+- Use + New Cadet Checkout to keep several cadet queues open at once. Each tab keeps its own cadet, notes and quantities, and drafts reopen with the app.
+- Close Checkout Tab discards only that draft after confirmation. Queuing items does not finalize a checkout.
+- Temporary Loans is now under Returns. Loan Queued Items remains available in each checkout tab.
 - The app opens with an admin code prompt before anyone can use checkout or returns.
 - Det005 is the cadre administrator code and signs in as CADRE.
 - On the first login on each Windows device, choose a protected backup folder. A folder on another drive, this computer, or OneDrive is recommended.
@@ -5801,6 +5869,8 @@ A.C.E. Manual
     @staticmethod
     def _create_tree(parent: ttk.Frame, columns: list[str], *, selectmode: str = "browse") -> ttk.Treeview:
         tree = ttk.Treeview(parent, columns=columns, show="headings", selectmode=selectmode)
+        from .hover import install_hover
+        install_hover(tree)
         vertical_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
         horizontal_scrollbar = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vertical_scrollbar.set, xscrollcommand=horizontal_scrollbar.set)
@@ -5854,6 +5924,9 @@ A.C.E. Manual
         if current_tab == "Checkout":
             self._focus_checkout_scan()
         elif current_tab == "Returns":
+            if self.returns_notebook.select() == str(self.loans_tab):
+                self.refresh_loans()
+                return
             if self.selected_return_cadet_id is None:
                 self.return_cadet_search_entry.focus_set()
             else:

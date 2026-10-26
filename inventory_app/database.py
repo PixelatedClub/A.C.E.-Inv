@@ -18,6 +18,7 @@ from .defaults import (
 )
 from .wings_catalog import WINGS_CATALOG
 from .wings_catalog_official_import import WINGS_OFFICIAL_IMPORT_ADDITIONS
+from .catalog_inventory import COUNT_SCHEMA
 
 
 # Compatibility constants are intentionally empty in the clean deployment.
@@ -42,6 +43,15 @@ CREATE TABLE IF NOT EXISTS items (
     total_quantity INTEGER NOT NULL DEFAULT 1 CHECK (total_quantity >= 0),
     available_quantity INTEGER NOT NULL DEFAULT 1 CHECK (available_quantity >= 0),
     created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS item_metadata (
+    barcode_id TEXT PRIMARY KEY REFERENCES items(barcode_id) ON DELETE CASCADE,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    family TEXT NOT NULL DEFAULT '',
+    season TEXT NOT NULL DEFAULT 'Unclassified',
+    image_png TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
 
@@ -130,6 +140,17 @@ CREATE TABLE IF NOT EXISTS transactions (
     FOREIGN KEY (cadet_id) REFERENCES cadets (cadet_id),
     FOREIGN KEY (approved_by_admin_id) REFERENCES admin_codes (admin_id),
     FOREIGN KEY (return_approved_by_admin_id) REFERENCES admin_codes (admin_id)
+);
+
+CREATE TABLE IF NOT EXISTS acquisition_actions (
+    action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cadet_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    before_json TEXT NOT NULL,
+    after_json TEXT NOT NULL,
+    item_notes_json TEXT NOT NULL,
+    undone_at TEXT NOT NULL DEFAULT '',
+    undone_by TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS admin_codes (
@@ -326,6 +347,8 @@ BEGIN
 END;
 """
 
+
+SCHEMA_SQL += COUNT_SCHEMA
 
 def utc_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")

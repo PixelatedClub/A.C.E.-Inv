@@ -147,10 +147,10 @@ class LoanServiceMixin:
         self.database.note_write()
 
     def export_monday_report(self, monday=None):
-        """Generate the standard A.C.E. Excel report for the previous Monday-Sunday period."""
+        """Generate the standard browser report for the previous Monday-Sunday period."""
         monday = monday or (date.today() - timedelta(days=date.today().weekday()))
         start, end = monday - timedelta(days=7), monday - timedelta(days=1)
-        return self.export_weekly_activity_spreadsheet(
+        return self.export_activity_html(
             start_date=start.isoformat(),
             end_date=end.isoformat(),
             open_after=False,

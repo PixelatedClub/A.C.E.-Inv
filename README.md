@@ -4,11 +4,48 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.7.6 (September 8, 2026)**
+**Current source version: 1.8.8 (October 19, 2026)**
 
-Checkout can issue the current queued barcodes as either a normal checkout or a temporary loan. Loan Queued Items asks for a custom return date or offers two-, three-, and four-week presets. Checkout > Temporary Loans shows due dates and overdue status; opening the app and hourly checks while it remains open remind the signed-in administrator about overdue items. Reminders require A.C.E. to be running. Returns and permanent dispositions close the original checkout and remove it from outstanding reminders.
+Generate Full Report and Previous Week Report now produce the same self-contained HTML browser report, with the full catalog, checkout, fitting, cadet, loan, data-quality and current inventory sections plus uniform charts. Reports can be printed from the browser and no longer include a COA section. Choose an end date of today to include today's saved activity. Explicit WINGS spreadsheet and CSV exports remain available.
 
-Every report now uses the same polished Excel format: an Executive Summary with BLUF, key metrics, daily activity, major activities, and course of action / validation, followed by readable detail sheets. The Previous Week Report automatically selects the prior Monday-Sunday; Date-Range Report uses the dates you choose. Reports are generated on demand; no email is sent automatically.
+Middle initials are optional for cadet checkout and record creation. Existing saved initials are retained when the same cadet is checked out using only first and last name. Checkout draft tabs reuse the lowest available tab number.
+
+Visible WINGS and size-specific local catalog entries automatically appear in Items with zero stock and a unique barcode when the app starts. Existing inventory and checkouts are preserved. Hidden or superseded catalog entries are excluded. New catalog items also receive an inventory barcode automatically.
+
+Items shows **Counting Status** and filters for **Not counted**, **Counted**, and **Counted zero**. Use **Record Physical Count** for the available units on the shelf. The total includes existing cadet checkouts. Recording 0 confirms a completed zero count. Adding stock marks that inventory as counted. Baseline placeholder creation does not inflate weekly receipts or new counted catalog activity.
+
+Checkout supports multiple cadet draft tabs through **+ New Cadet Checkout**. Each tab keeps its own identity, queued units and notes. Drafts are saved locally beside the database in `checkout_drafts.json` and restored on the next launch. Units queued in other tabs are included in stock checks. Checkout and loan submission still require the normal approval and availability checks.
+
+The Index has **Generate Selected Barcode**, and Add Custom Item / Add WINGS Item offers **Generate a barcode after adding this item**. Enter 0 for a label with no stock, or the quantity to add. A matching barcode is reused.
+
+In Cadets, select a cadet and use **Undo Last Acquired / Purchased** to reopen the most recent acquisition batch. Stock totals are restored while the items remain checked out. New acquisitions save their original records for undo across restarts. Older acquisitions require their pre-acquisition backup.
+
+Rows highlight on hover without changing the clicked selection. Shortcut instructions are available in Settings > Keyboard Shortcuts. Direct shortcuts are Ctrl+G (generator), Ctrl+L (loans), Ctrl+M (fittings/measurements), Ctrl+I (index), Ctrl+R (returns), and Ctrl+T (selected item's tags/image in Items). Ctrl+F remains Items search. No Ctrl+K prefix is needed. Shortcuts do not finalize inventory transactions.
+
+Drag the raised dividers in Items, Barcode Generator, Returns, Cadets, or Cadet Fitting to resize adjacent panels. The Barcode Generator also has a horizontal divider above its label library. Double-click a divider to reset it. Panel positions last for the current session. The Items detail panel scrolls when its controls do not fit vertically.
+
+### Item shortcuts, tags, and photos
+
+Right-click an item or a row in the barcode label library and choose **Add to checkout list**. Multi-selection queues one unit per barcode, subject to stock availability. This does not complete a checkout or change inventory. The cadet and approval workflow remains in Checkout.
+
+- Ctrl+Enter in either inventory list: queue selected barcodes.
+- Ctrl+F or Ctrl+1: Items search. Ctrl+2: Checkout. Ctrl+3: Reports.
+- Delete in the checkout list: remove selected queued rows, not inventory records.
+- **Tags / View or Add Image**: manage case-insensitive tags with suggestions and removable chips, set family/season, or attach a PNG. Images are stored within the database, up to 2 MB and 4096 pixels per side.
+- **Tags** filter: enter comma-separated tags to require all tags. Case and repeated spaces are ignored. Existing category/type fields are retained and also exposed as normalized search tags.
+
+**Generate Full Report** and **Previous Week Report** use the same HTML browser-report engine. They include the original activity sections, current inventory, and embedded pie charts for uniform family and season. Each chart counts recorded units once within its own dimension; do not add the family and season charts together. Family defaults are inferred from item descriptions and can be overridden. Seasons require explicit assignment and otherwise remain Unclassified. Available units exclude Lost/Retired records. These are current-stock views, separate from the report's date-filtered activity. CSV remains a single-table export. No database backup or item images are automatically attached to an outgoing report.
+
+**Shared-save development beta 0.2.0:** An isolated desktop/API prototype is available
+in [shared_beta](shared_beta/README.md). Run `python -m shared_beta.launch` to try it
+with synthetic data. It does not migrate or replace the operational application.
+Entra sign-in, Azure SQL hosting adapters, SharePoint publishing, and migration code
+are implemented. University configuration, deployment, and live acceptance remain
+pending; see [deployment instructions](shared_beta/DEPLOYMENT.md).
+
+Checkout can issue the current queued barcodes as either a normal checkout or a temporary loan. Loan Queued Items asks for a custom return date or offers two-, three-, and four-week presets. Returns > Temporary Loans shows due dates and overdue status; opening the app and hourly checks while it remains open remind the signed-in administrator about overdue items. Reminders require A.C.E. to be running. Returns and permanent dispositions close the original checkout and remove it from outstanding reminders.
+
+Full activity reports use the same browser format: a summary with BLUF, key metrics, daily activity and major activities, followed by navigable detail sections. COA is omitted. The Previous Week Report automatically selects the prior Monday-Sunday; Date-Range Report uses the dates you choose. Reports are generated on demand; no email is sent automatically.
 
 The consolidated Items workspace displays every barcode with category and item type, selected-item details, stock controls, editing, printing, clipboard copying, manual creation, and WINGS export tools.
 
@@ -42,7 +79,7 @@ The application starts with:
 - Cadet records and complete transaction history
 - Inventory, readiness, and accountability reports with inclusive start/end date filters
 - One-click current-week and trailing-seven-day report presets with filtered CSV export
-- One-click consolidated weekly Excel report with a popup for BLUF, MAs, and COA/validation
+- One-click consolidated weekly HTML report with a popup for BLUF and MAs
 - Automatic weekly detail tabs for inventory changes, new catalog items, transactions, fittings, cadet records, and data-quality checks
 - Inventory-change reports show who recorded each addition, edit, restock, and deletion
 - Dedicated Cadet Fitting Index for recording uniform sizes and measurements by cadet

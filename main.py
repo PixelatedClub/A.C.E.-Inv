@@ -24,7 +24,7 @@ def main() -> None:
         if not instance.is_primary:
             instance.activate_existing_window(APP_TITLE)
             return
-        app = InventoryApp(load_settings())
+        app = InventoryApp(load_settings(), preload_catalog=True)
         app.mainloop()
 
 

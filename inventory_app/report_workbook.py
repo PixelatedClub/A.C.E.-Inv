@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
+from .report_charts import pie_parts, OFFICE
 
 
 NAVY = "FF0C2340"
@@ -270,6 +271,11 @@ def write_report_workbook(
     created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     core = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>{escape(title)}</dc:title><dc:creator>{escape(org_line)}</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified></cp:coreProperties>'
     app = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>A.C.E.</Application><TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">' + ''.join(f'<vt:lpstr>{escape(s["sheet_name"])}</vt:lpstr>' for s in sheets) + '</vt:vector></TitlesOfParts></Properties>'
+    chart_indexes = [i for i,s in enumerate(sheets,1) if s.get('pie') and sum(r['Total Units'] for r in s['rows']) > 0]
+    for i in chart_indexes:
+        types = types.replace('</Types>',
+            f'<Override PartName="/xl/charts/chart{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>'
+            f'<Override PartName="/xl/drawings/drawing{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>')
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as book:
         book.writestr("[Content_Types].xml", types); book.writestr("_rels/.rels", root_rels)
         book.writestr("docProps/core.xml", core); book.writestr("docProps/app.xml", app)
@@ -277,5 +283,9 @@ def write_report_workbook(
         book.writestr("xl/styles.xml", _styles_xml())
         book.writestr("xl/worksheets/sheet1.xml", _summary_xml(title, subtitle, org_line, summary))
         for index, sheet in enumerate(sheets[1:], 2):
-            book.writestr(f"xl/worksheets/sheet{index}.xml", _detail_xml(sheet, subtitle, org_line))
+            xml = _detail_xml(sheet, sheet.get('note',subtitle), org_line)
+            if index in chart_indexes:
+                xml = xml.replace('</worksheet>',f'<drawing xmlns:r="{OFFICE}" r:id="rId1"/></worksheet>')
+                for part,data in pie_parts(index,sheet).items(): book.writestr(part,data)
+            book.writestr(f"xl/worksheets/sheet{index}.xml", xml)
     return path
