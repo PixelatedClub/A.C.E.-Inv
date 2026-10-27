@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.4 - Shared uniform search - 2026-10-27
+
+- Search across item names, sizes, types and linked WINGS information using the CIC vocabulary. Tags are supplementary, and barcodes/aliases still resolve. Display clearer item context and distinguish local catalog choices from WINGS entries.
+- Recognize decimal, fractional, Unicode and written headwear sizes, spelled quantities, and full garment-size words. Preserve season/gender/width ambiguity for review.
+- Classify slacks, skirts and PTG pants from their names before generic combined categories. No records are merged or renamed.
+
 ## 1.9.0-cic.3 - Human size entry - 2026-10-27
 
 - Accept ordinary label sizes and context-scoped aliases without item IDs. Normalize case, size abbreviations, known typos, summer/all-weather terms and rank names. Keep uncertain type, gender, width or quantity matches held.

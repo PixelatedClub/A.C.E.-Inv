@@ -1756,16 +1756,9 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             equipment_name = str(custom["equipment_name"])
             if configuration != "Standard":
                 equipment_name = f"{equipment_name} - {configuration}"
-            query_words = [word for word in self.index_search_var.get().casefold().split() if word]
-            search_text = " ".join(
-                [
-                    equipment_name,
-                    str(custom["uniform_system"]),
-                    str(custom["size_system"]),
-                    str(custom["search_aliases"]),
-                ]
-            ).casefold()
-            if not all(word in search_text for word in query_words):
+            from .uniform_search import search_match
+            if not search_match(self.index_search_var.get(), dict(item_name=equipment_name,
+                    category=custom['uniform_system'],size=custom['size_system'],search_aliases=custom['search_aliases'])):
                 continue
             rows.append(
                 {
@@ -4187,10 +4180,10 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self.generator_item_name_var.set(item_name)
         self.generator_item_type_var.set(item_type)
         self.generator_selected_item_var.set(official_name)
-        self.generator_size_label_var.set("WINGS Size")
+        self.generator_size_label_var.set("Catalog Size")
         self.generator_size_combo["values"] = [requested_size]
         self.generator_variant_var.set(requested_size)
-        self._set_status(f"Selected WINGS item {wings_item_no}. Enter the quantity to add.")
+        self._set_status(f"Selected item {wings_item_no}. Enter the quantity to add.")
 
     def _quick_find_matches(self, query: str) -> list[tuple[str, tuple[str, str, str, str, str, str]]]:
         query_text = " ".join(
@@ -4203,11 +4196,12 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
 
         results: list[tuple[str, tuple[str, str, str, str, str]]] = []
         for row in self.service.list_wings_catalog(search=query_text)[:100]:
+            from .uniform_search import describe
             catalog_size = str(row["size"] or "").strip() or ONE_SIZE_VARIANT
             sex = f" | {row['sex']}" if row["sex"] else ""
             stock = f" | Stock {row['stock_number']}" if row["stock_number"] else ""
             label = (
-                f"WINGS {row['item_no']} | {row['item_name']} | {catalog_size}"
+                f"{'WINGS' if row.get('is_wings') else 'Local'} {row['item_no']} | {row['item_name']} | {describe(row)[1]}"
                 f"{sex}{stock}"
             )
             official_name = f"{row['item_name']} ({catalog_size})"
@@ -4721,7 +4715,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self.item_type_var.set(row["item_type"])
         self.item_quantity_var.set("1")
         self._set_text(self.item_notes_text, "")
-        self.item_detail_var.set(f"{row['item_name']}\n\nBarcode: {row['barcode_id']}\nWINGS / Local #: {row.get('wings_item_no') or 'Not assigned'}\nCategory: {row['category']}\nSize / Variant: {row['variant']}\nType: {row['item_type']}\n\nCurrent notes: {str(row.get('notes') or 'None')[:350]}")
+        self.item_detail_var.set(f"{row['item_name']}\n\nBarcode: {row['barcode_id']}\nWINGS / Local #: {row.get('wings_item_no') or 'Not assigned'}\nCategory: {row['category']}\nSize / Variant: {row['variant']}\nType: {row['item_type']}\nCatalog: {row.get('search_context','')}\n\nCurrent notes: {str(row.get('notes') or 'None')[:350]}")
         self.item_form_status_var.set(
             f"Status: {row['status']} | Available {row['available_quantity']} / Total {row['total_quantity']} | {row['count_status']}"
         )

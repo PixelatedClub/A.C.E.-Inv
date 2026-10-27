@@ -22,6 +22,7 @@ from .image_utils import read_png_dimensions, scaled_dimensions
 from .report_workbook import write_report_workbook
 from .item_metadata import enrich_items, inventory_analysis
 from .wings_catalog import WINGS_COLUMNS
+from .uniform_search import search_match, describe as describe_uniform
 
 
 NAME_PATTERN = re.compile(r"^\s*([^,]+?)\s*,\s*(?:([A-Za-z]{1,3})\.?\s*,\s*|,\s*)?([^,]+?)\s*$")
@@ -1064,22 +1065,8 @@ class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryM
             "item_no NOT LIKE 'LOCAL-RANK-SB-%'",
         ]
         params: list[Any] = []
-        words = [word for word in search.strip().casefold().split() if word]
-        for word in words:
-            searchable_word = str(int(word)) if word.isdigit() else word
-            token = f"%{searchable_word}%"
-            conditions.append(
-                """
-                (
-                    lower(item_no) LIKE ? OR lower(item_name) LIKE ? OR lower(size) LIKE ?
-                    OR lower(category) LIKE ? OR lower(subcategory) LIKE ? OR lower(sex) LIKE ?
-                    OR lower(stock_number) LIKE ? OR lower(uom) LIKE ?
-                )
-                """
-            )
-            params.extend([token] * 8)
         if category and category != "All":
-            conditions.append("category = ?")
+            conditions.append("category = ? COLLATE NOCASE")
             params.append(category)
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         order_clause = (
@@ -1102,7 +1089,7 @@ class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryM
         for row in catalog_rows:
             row["item_no_key"] = row["item_no"]
             row["item_no"] = self._format_wings_item_no(row["item_no"]) if row["is_wings"] else row["item_no"]
-        return catalog_rows
+        return [row for row in catalog_rows if search_match(search,row)]
 
     def get_wings_catalog_item(self, item_no: str) -> dict[str, Any]:
         cleaned_item_no = str(item_no).strip()
@@ -1773,29 +1760,6 @@ class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryM
         conditions: list[str] = [self._not_in_clause("barcode_id", EASTER_EGG_BARCODE_IDS)]
         params: list[Any] = list(EASTER_EGG_BARCODE_IDS)
 
-        if search.strip():
-            search_text = f"%{search.strip()}%"
-            conditions.append(
-                """
-                (
-                    barcode_id LIKE ?
-                    OR item_name LIKE ?
-                    OR category LIKE ?
-                    OR variant LIKE ?
-                    OR item_type LIKE ?
-                    OR notes LIKE ?
-                    OR wings_item_no LIKE ?
-                    OR EXISTS (
-                        SELECT 1 FROM barcode_aliases AS alias
-                        WHERE alias.canonical_barcode_id = items.barcode_id
-                          AND alias.alias_barcode_id = ? COLLATE NOCASE
-                    )
-                )
-                """
-            )
-            params.extend([search_text] * 7)
-            params.append(search.strip())
-
         if status_filter and status_filter != "All":
             conditions.append("status = ?")
             params.append(status_filter)
@@ -1821,7 +1785,22 @@ class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryM
         """
         with self.database.connect() as connection:
             rows = connection.execute(query, params).fetchall()
-        return enrich_items(self, [dict(row) for row in rows])
+        from .catalog_inventory import item_key
+        result = enrich_items(self, [dict(row) for row in rows])
+        with self.database.connect() as connection:
+            catalog = {item_key(r['item_no']):dict(r) for r in connection.execute('SELECT * FROM wings_catalog')}
+            aliases = {}
+            for alias in connection.execute('SELECT alias_barcode_id,canonical_barcode_id FROM barcode_aliases'):
+                aliases.setdefault(alias['canonical_barcode_id'],[]).append(alias['alias_barcode_id'])
+        for row in result:
+            cat = catalog.get(item_key(row.get('wings_item_no','')), {})
+            row['catalog_name'] = cat.get('item_name','')
+            row['catalog_subcategory'] = cat.get('subcategory','')
+            row['sex'] = cat.get('sex','')
+            row['stock_number'] = cat.get('stock_number','')
+            row['barcode_aliases'] = aliases.get(row['barcode_id'],[])
+            row['search_context'] = describe_uniform(row)[1]
+        return [row for row in result if search_match(search,row)]
 
     def list_label_records(self, *, search: str = "", status_filter: str = "All") -> list[dict[str, Any]]:
         return self.list_items(search=search, status_filter=status_filter)

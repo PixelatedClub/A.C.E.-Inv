@@ -115,6 +115,11 @@ def parse_answers(answers, catalog):
             issues.append(f'{family} {label}: answer Yes or No to possessing this item.')
         if value == '0 - None':
             value = '0'
+        if not value.isdigit():
+            from .cic_matching import canonical
+            normalized_count = canonical(value)
+            if len(normalized_count) == 1 and normalized_count[0].isdigit():
+                value = normalized_count[0]
         large_count = value == 'More than 10'
         if large_count:
             count = 11

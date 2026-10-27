@@ -18,6 +18,9 @@ QUESTIONS=[
 def question_for(item):
     text=' '.join(str(item.get(k,'')) for k in ('item_name','category','subcategory')).casefold()
     name=str(item.get('item_name','')).casefold()
+    # Broad categories such as PANTS/SKIRT and Shorts/Pants are not item types.
+    # Prefer the actual name, then the more specific subcategory.
+    details=(name,str(item.get('subcategory','')).casefold())
     if 'afrotc patch' in name and 'colored' not in name:return 'ocp.afrotc'
     if 'brown cotton shirt' in name:return 'ocp.shirt'
     if 'nametape' in name or 'name tape' in name:return 'ocp.other'
@@ -26,15 +29,18 @@ def question_for(item):
     if 'flight suit' in text:return 'other.flight'
     if 'tie tab' in text or 'tie-tab' in text:return 'blues.tietab'
     if any(x in text for x in ('ocp','patrol','coyote','rigger')):
-        for words,key in [(('afrotc','af rotc'),'afrotc'),(('flag',),'flag'),(('rank','insignia'),'rank'),(('patrol','cap','cover'),'cover'),(('fleece',),'fleece'),(('boot',),'boots'),(('sock',),'socks'),(('belt','rigger'),'belt'),(('t-shirt','tshirt','undershirt','shirt tan'),'shirt'),(('trouser','pant'),'trousers'),(('blouse','coat','shirt'),'coat')]:
-            if any(word in text for word in words):return 'ocp.'+key
+        for detail in details:
+            for words,key in [(('afrotc','af rotc'),'afrotc'),(('flag',),'flag'),(('rank','insignia'),'rank'),(('patrol','cap','cover'),'cover'),(('fleece',),'fleece'),(('boot',),'boots'),(('sock',),'socks'),(('belt','rigger'),'belt'),(('t-shirt','tshirt','undershirt','shirt tan'),'shirt'),(('trouser','pant'),'trousers'),(('blouse','coat','shirt'),'coat')]:
+                if any(word in detail for word in words):return 'ocp.'+key
         return 'ocp.other'
     if any(x in text for x in ('physical training','ptg','ptu','iptu','pt wear','track',' pt ','pt shirt','pt pant','pt jacket','pt short')):
-        for word,key in [('short','shorts'),('pant','pants'),('jacket','jacket'),('shirt','shirt')]:
-            if word in text:return 'ptg.'+key
+        for detail in details:
+            for words,key in [(('short','trunk'),'shorts'),(('pant',),'pants'),(('jacket',),'jacket'),(('shirt',),'shirt')]:
+                if any(word in detail for word in words):return 'ptg.'+key
         return 'ptg.other'
     if any(x in text for x in ('blues','blue','flight cap','lightweight','windbreaker','shirt, mens','shirt, womens','trousers, mens','slacks','shoes, mens','shoes, womens','tie','buckle')):
-        for words,key in [(('rank','insignia'),'rank'),(('cap','cover'),'cover'),(('skirt',),'skirt'),(('trouser','slack','pant'),'trousers'),(('shoe',),'shoes'),(('buckle','belt'),'belt'),(('tie',),'tie'),(('jacket','windbreaker'),'jacket'),(('shirt',),'shirt')]:
-            if any(word in text for word in words):return 'blues.'+key
+        for detail in details:
+            for words,key in [(('rank','insignia'),'rank'),(('cap','cover'),'cover'),(('skirt',),'skirt'),(('trouser','slack','pant'),'trousers'),(('shoe',),'shoes'),(('buckle','belt'),'belt'),(('tie',),'tie'),(('jacket','windbreaker'),'jacket'),(('shirt',),'shirt')]:
+                if any(word in detail for word in words):return 'blues.'+key
         return 'blues.other'
     return 'other.other'

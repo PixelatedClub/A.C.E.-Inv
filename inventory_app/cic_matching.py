@@ -4,11 +4,28 @@ Unknown words and multiple catalog matches are never silently guessed.
 """
 from collections import Counter
 from fractions import Fraction
+from decimal import Decimal
+from functools import lru_cache
 import re
 
 
 def canonical(value):
+    # Return a fresh list so callers cannot mutate cached vocabulary.
+    return list(_canonical(str(value or '')))
+
+
+@lru_cache(maxsize=8192)
+def _canonical(value):
     text = str(value or '').casefold().replace('½', ' 1/2').replace('¼', ' 1/4').replace('¾', ' 3/4')
+    numbers = {'zero':'0','one':'1','two':'2','three':'3','four':'4','five':'5',
+               'six':'6','seven':'7','eight':'8','nine':'9','ten':'10','eleven':'11',
+               'twelve':'12','thirteen':'13','fourteen':'14','fifteen':'15','sixteen':'16',
+               'seventeen':'17','eighteen':'18','nineteen':'19','twenty':'20'}
+    text = re.sub(r'\b(?:'+'|'.join(numbers)+r')\b', lambda m:numbers[m[0]], text)
+    text = re.sub(r'\b(\d+)\s+and\s+(?:a|1)\s+half\b', r'\1 1/2', text)
+    text = re.sub(r'\b(\d+)\s+and\s+(?:a|1)\s+quarter\b', r'\1 1/4', text)
+    text = re.sub(r'\b(\d+)\s+and\s+3\s+quarters\b', r'\1 3/4', text)
+    text = re.sub(r'\b(\d+)\s+point\s+(\d+)\b', r'\1.\2', text)
     def fraction(match):
         try:
             return str(float(Fraction(match[1]) + Fraction(match[2])))
@@ -23,6 +40,8 @@ def canonical(value):
         (r'\b(?:triple|3)[ -]?(?:extra|x)[ -]?large\b|\bxxx[ -]?large\b|\b3xl\b', 'xxxl'),
         (r'\b(?:double|2)[ -]?(?:extra|x)[ -]?large\b|\bxx[ -]?large\b|\b2xl\b', 'xxl'),
         (r'\b(?:extra|x)[ -]?large\b', 'xl'),
+        (r'\b(?:extra|x)[ -]?short\b', 'xs'),
+        (r'\b(?:extra|x)[ -]?long\b', 'xl'),
         (r'\b(?:one size|standard|osfa|one size fits all)\b', 'onesize'),
         (r'\b(?:women[’\x27]?s|woman[’\x27]?s|female|womens)\b', 'female'),
         (r'\b(?:men[’\x27]?s|man[’\x27]?s|male|mens)\b', 'male'),
@@ -53,7 +72,11 @@ def canonical(value):
                'hats':'cap', 'hat':'cap', 'caps':'cap', 'patches':'patch', 'ranks':'rank',
                'undershirts':'shirt', 'undershirt':'shirt', 'shirts':'shirt', 'boots':'boot',
                'fleeces':'fleece', 'belts':'belt', 'flags':'flag', 'american':'us'}
-    return [aliases.get(w, w) for w in words if w not in {'size', 'sized', 'pair', 'pairs', 'inch'}]
+    aliases.update({'ocps':'ocp','slacks':'pants','slack':'pants','blues':'blue',
+                    'ptgs':'ptg','tshirt':'shirt','tshirts':'shirt','men':'male','women':'female'})
+    ignored = {'size', 'sized', 'pair', 'pairs', 'inch', 'inches', 'in', 'i', 'have', 'a', 'an', 'the', 'it', 'is'}
+    return tuple(format(Decimal(w).normalize(),'f') if re.fullmatch(r'\d+(?:\.\d+)?',w) else aliases.get(w,w)
+                 for w in words if w not in ignored)
 
 
 def row_quantity(row):

@@ -31,6 +31,21 @@ class HumanCicTests(unittest.TestCase):
         parsed,issues=parse_answers(self.answers('ocp.cover',2,'7 3/8'),self.catalog)
         self.assertEqual(issues,[]);self.assertEqual(parsed['lines'][0]['quantity'],2)
         self.assertEqual(parsed['lines'][0]['item_no'],'1')
+    def test_decimal_fraction_unicode_and_words_agree(self):
+        catalog=[item('hat','ocp.cover','OCP Patrol Cap','7-1/2')]
+        for size in ['7.5','7.50','7 1/2','7-1/2','7½','seven and a half','seven point five','Size 7.5','it is a size seven and one half']:
+            with self.subTest(size=size):
+                parsed,issues=parse_answers(self.answers('ocp.cover','one',size),catalog)
+                self.assertFalse(issues);self.assertEqual(parsed['lines'][0]['item_no'],'hat')
+        self.assertFalse(match_human('7.75','ocp.cover',catalog))
+    def test_full_trouser_sizes_and_season_variants(self):
+        catalog=[item('aw','ocp.trousers','TROUSERS, OCP','M-R'),
+                 item('sw','ocp.trousers','TROUSERS, OCP IHWCU','M-R')]
+        for size in ['medium regular','MED/REG','MR','m-r','Medium Regular']:
+            self.assertEqual(len(match_human(size,'ocp.trousers',catalog)),2)
+        for size in ['medium regular summer','Medium Regular HOT','mr ihwcu']:
+            self.assertEqual([r['item_no'] for r in match_human(size,'ocp.trousers',catalog)],['sw'])
+        self.assertEqual([r['item_no'] for r in match_human('medium regular all weather','ocp.trousers',catalog)],['aw'])
     def test_summer_and_all_weather_are_never_conflated(self):
         for text,no in [('Small regular HOT','3'),('S-R summer','3'),('sr all weather','2'),('small regular cold','2')]:
             self.assertEqual([c['item_no'] for c in match_human(text,'ocp.coat',self.catalog)],[no])
