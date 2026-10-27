@@ -59,6 +59,28 @@ class CicTests(unittest.TestCase):
    item=c.execute('SELECT * FROM items WHERE barcode_id=?',(bc,)).fetchone();self.assertEqual((item['total_quantity'],item['available_quantity']),(7,5))
   self.approve(self.submit(),cadet_id=cid)
   with self.service.database.connect() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM transactions').fetchone()[0],2)
+ def test_regular_checkout_reconciles_only_the_unrecorded_difference(self):
+  item=self.service.save_generated_barcode(category='Other',variant='Any',item_type='Any',wings_item_no=self.cat['item_no'],units_per_barcode=5)
+  self.service.checkout_item(barcode_id=item['barcode_id'],cadet_name='Example, Jane',cadet_email='jane@example.invalid',quantity=2,approved_by=ADMIN)
+  cid=self.service.list_cadets()[0]['cadet_id']
+  original=self.operational()
+  card=self.submit();view=self.service.preview_cic(card['card_id'],cadet_id=cid)
+  self.assertEqual((view['plan'][0]['existing'],view['plan'][0]['add']),(2,0))
+  self.approve(card,cadet_id=cid);self.assertEqual(original,self.operational())
+  more=self.submit(self.payload(3));view=self.service.preview_cic(more['card_id'],cadet_id=cid)
+  self.assertEqual(view['plan'][0]['add'],1)
+  self.approve(more,cadet_id=cid)
+  after=self.operational();self.assertEqual(len(after['transactions']),3)
+  with self.service.database.connect() as c:
+   stock=c.execute('SELECT total_quantity,available_quantity FROM items WHERE barcode_id=?',(item['barcode_id'],)).fetchone()
+   self.assertEqual(tuple(stock),(6,3))
+  self.approve(self.submit(self.payload(3)),cadet_id=cid)
+  self.assertEqual(after,self.operational())
+ def test_lower_declaration_does_not_remove_existing_checkouts(self):
+  first=self.approve(self.submit());cid=first['cadet_id'];before=self.operational()
+  card=self.submit(self.payload(1));view=self.service.preview_cic(card['card_id'],cadet_id=cid)
+  self.assertEqual((view['plan'][0]['add'],view['plan'][0]['excess']),(0,1))
+  self.approve(card,cadet_id=cid);self.assertEqual(before,self.operational())
  def test_name_matches_require_choice_email_duplicate_cannot_create(self):
   cadet=self.service.save_cadet(cadet_name='Example, A, Jane',cadet_email='jane@example.invalid');card=self.submit()
   self.assertEqual(len(self.service.cic_candidates(card['card_id'])),1)
