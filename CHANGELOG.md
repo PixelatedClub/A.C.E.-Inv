@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.3 - Human size entry - 2026-10-27
+
+- Accept ordinary label sizes and context-scoped aliases without item IDs. Normalize case, size abbreviations, known typos, summer/all-weather terms and rank names. Keep uncertain type, gender, width or quantity matches held.
+- Retain usable lines on held cards and allow staff to save corrections incrementally without approval or inventory changes. Preserve original Microsoft answers.
+- Correct CIC grouping for AFROTC patches, brown cotton undershirts and nametapes.
+
 ## 1.9.0-cic.2 - Microsoft CIC branch - 2026-10-26
 
 - Removed the local CIC web server, phone-session controls, LAN URLs and session codes from this Microsoft intake branch.

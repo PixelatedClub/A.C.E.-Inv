@@ -15,6 +15,8 @@ import uuid
 
 from .cic import norm, now
 from .cic_questions import QUESTIONS
+from .cic_matching import match_human, row_quantity
+from .catalog_inventory import item_key
 
 SCHEMA = 'ace.cic.forms.v1'
 MAX_BYTES = 256 * 1024
@@ -75,7 +77,7 @@ def decode_answers(envelope, profile):
 
 
 def parse_answers(answers, catalog):
-    """Exact catalog matching only; uncertainty becomes a persistent hold."""
+    """Context-scoped aliases and ordinary size entries; uncertainty stays held."""
     issues = []
     last = answers.get('last_name', '').strip()
     first = answers.get('first_name', '').strip()
@@ -125,17 +127,44 @@ def parse_answers(answers, catalog):
         allocated = 0
         if norm(text) in ('none', '0', 'n/a'):
             text = ''
-        for row in text.splitlines():
-            if not row.strip():
-                continue
+        rows = [row.strip() for row in re.split(r'[\n;]+', text) if row.strip()]
+        for row in rows:
             parts = [p.strip() for p in row.split('|')]
-            if len(parts) != 3 or not re.fullmatch(r'[1-9][0-9]{0,2}', parts[-1]) or int(parts[-1]) > 100:
-                issues.append(f'{family} {label}: use one line per size: item ID or full type | size | quantity. Problem: {row[:160]}')
-                continue
-            description, size, qty = parts[0], parts[1], int(parts[2])
+            cat = None
+            if len(parts) == 3:
+                if not re.fullmatch(r'[1-9][0-9]{0,2}', parts[-1]) or int(parts[-1]) > 100:
+                    issues.append(f'{family} {label}: invalid quantity in {row[:160]}.'); continue
+                description, size, qty = parts[0], parts[1], int(parts[2])
+                matches = [c for c in catalog if c.get('group') == key and norm(c['size']) == norm(size)
+                           and (norm(description) == norm(c['name']) or item_key(description) == item_key(c['item_no']))]
+                if len(matches) != 1:
+                    matches = match_human(description + ' ' + size, key, catalog)
+            elif len(parts) == 1:
+                description, qty = row_quantity(row)
+                size = description
+                if qty is None and key in ('ocp.flag', 'ocp.afrotc'):
+                    patch_count = re.fullmatch(r'(\d+)\s+((?:spice|brown|coyote|tan)\b.*)', description, re.I)
+                    if patch_count:
+                        description, qty = patch_count[2], int(patch_count[1])
+                if qty is None:
+                    if len(rows) == 1 and not large_count:
+                        qty = count
+                    elif len(rows) == count:
+                        qty = 1
+                    else:
+                        issues.append(f'{family} {label}: say how many of each size, for example Medium x2.'); continue
+                if not 1 <= qty <= 100:
+                    issues.append(f'{family} {label}: quantity per size must be 1 to 100.'); continue
+                matches = match_human(description, key, catalog)
+                if len(matches) != 1:
+                    if matches:
+                        choices = '; '.join(f"{c['name']} / {c['size']}" + (f" ({c['sex']})" if c.get('sex') else '') for c in matches[:5])
+                        issues.append(f'{family} {label}: "{row[:120]}" matches multiple items. Specify type, summer/all weather, mens/womens or width as applicable. Options: {choices}.')
+                    else:
+                        issues.append(f'{family} {label}: could not match "{row[:120]}". Confirm its label size and type in ACE; no item ID is required.')
+            else:
+                issues.append(f'{family} {label}: enter a size such as Medium regular x2, one size per line.'); continue
             allocated += qty
-            matches = [c for c in catalog if c.get('group') == key and norm(c['size']) == norm(size)
-                       and norm(description) in (norm(c['item_no']), norm(c['name']))]
             cat = matches[0] if len(matches) == 1 else None
             lines.append({'item_no': cat['item_no'] if cat else '', 'name': cat['name'] if cat else description,
                           'size': cat['size'] if cat else size, 'quantity': qty, 'group': key})
@@ -188,9 +217,11 @@ class SharePointCicMixin:
                        receipt_token=hmac.new(secret.encode(), source.encode(), hashlib.sha256).hexdigest(),
                        notes='Microsoft CIC response ' + response + '. Staff must verify identity and catalog mappings.')
         if issues:
-            payload.update(lines=[], no_items=True, assessment={})
-            if not valid_identity:
-                payload.update(name='Unresolved, Microsoft Intake', email=f'held-{request}@example.invalid')
+            payload['assessment'] = {}
+            if len(payload['lines']) > 100 or sum(l['quantity'] for l in payload['lines']) > 500:
+                payload.update(lines=[], no_items=True)
+        if not valid_identity:
+            payload.update(name='Unresolved, Microsoft Intake', email=f'held-{request}@example.invalid')
         # submit_cic commits its own idempotent transaction. A crash after this call is
         # recovered using the same session/request/secret; no stock can change here.
         card = self.submit_cic(payload, session_id=session, intake_issues=issues)
@@ -225,9 +256,9 @@ class SharePointCicMixin:
         if not isinstance(answers, dict) or set(answers) != {k for k, _ in FIELDS} or any(not isinstance(v, str) for v in answers.values()):
             raise ValueError('Keep all question keys and use text answers.')
         parsed, issues = parse_answers(answers, self.cic_catalog())
-        if issues:
-            raise ValueError('\n'.join(issues))
         self._validate_cadet_identity(parsed['name'], parsed['email'])
+        if len(parsed['lines']) > 100 or sum(l['quantity'] for l in parsed['lines']) > 500:
+            raise ValueError('Reduce the card to at most 100 size lines and 500 items.')
         with closing(self.database.connect()) as c:
             c.execute('BEGIN IMMEDIATE')
             card = self._cic_card(c, card_id)
@@ -238,8 +269,8 @@ class SharePointCicMixin:
             c.execute('DELETE FROM cic_lines WHERE card_id=?', (card_id,))
             c.executemany('INSERT INTO cic_lines(card_id,item_no,entered_name,entered_size,quantity,group_key) VALUES(?,?,?,?,?,?)',
                           [(card_id, l['item_no'], l['name'], l['size'], l['quantity'], l['group']) for l in parsed['lines']])
-            c.execute("UPDATE cic_cards SET cadet_name=?,cadet_email=?,assessment_json=?,intake_issues_json='[]',version=version+1 WHERE card_id=?",
-                      (parsed['name'], parsed['email'], json.dumps(parsed['assessment']), card_id))
+            c.execute("UPDATE cic_cards SET cadet_name=?,cadet_email=?,assessment_json=?,intake_issues_json=?,version=version+1 WHERE card_id=?",
+                      (parsed['name'], parsed['email'], json.dumps(parsed['assessment']), json.dumps(issues), card_id))
             c.execute('UPDATE cic_remote SET corrected_json=? WHERE card_id=?', (json.dumps(answers), card_id))
             self._cic_revalidate(c, card_id)
             self._cic_event(c, card_id, 'Microsoft answers corrected', actor, 'Local correction retained alongside original submission. Inventory unchanged.')

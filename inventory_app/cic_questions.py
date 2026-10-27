@@ -18,6 +18,9 @@ QUESTIONS=[
 def question_for(item):
     text=' '.join(str(item.get(k,'')) for k in ('item_name','category','subcategory')).casefold()
     name=str(item.get('item_name','')).casefold()
+    if 'afrotc patch' in name and 'colored' not in name:return 'ocp.afrotc'
+    if 'brown cotton shirt' in name:return 'ocp.shirt'
+    if 'nametape' in name or 'name tape' in name:return 'ocp.other'
     if 'service coat' in text or 'service dress coat' in text:return 'service.coat'
     if 'service cap' in text or 'wheel cap' in text:return 'service.cap'
     if 'flight suit' in text:return 'other.flight'

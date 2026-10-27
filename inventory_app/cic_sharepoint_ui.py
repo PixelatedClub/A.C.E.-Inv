@@ -130,7 +130,7 @@ class MicrosoftCicUiMixin:
             self._show_error(str(error)); return
         dialog = tk.Toplevel(self); dialog.title('Correct Microsoft CIC Answers'); dialog.geometry('850x740')
         frame = ttk.Frame(dialog, padding=12); frame.pack(fill='both', expand=True)
-        ttk.Label(frame, text='Correct identity, counts or size lines below.\nSize lines: item ID or full catalog name | exact size | quantity.\nThe original submission is retained. Saving corrections does not approve the card.', wraplength=800).pack(anchor='w', pady=8)
+        ttk.Label(frame, text='Correct identity, counts or size lines below.\nEnter ordinary sizes, for example Medium regular x2 or 7 3/8. Add summer/all weather, mens/womens or width when needed.\nThe original submission is retained. Saving corrections does not approve the card.', wraplength=800).pack(anchor='w', pady=8)
         tabs=ttk.Notebook(frame);tabs.pack(fill='both',expand=True)
         variables={};text_fields={}
         def entry(parent,key,label,choices=None):
@@ -153,7 +153,7 @@ class MicrosoftCicUiMixin:
                 group=ttk.LabelFrame(body,text=label,padding=10);group.pack(fill='x',pady=8)
                 entry(group,key+'.has_item','Possesses this item?',('Yes','No','yes','no'))
                 entry(group,key+'.count','Quantity')
-                ttk.Label(group,text='Exact type or item ID | size | quantity, one line per size').pack(anchor='w',pady=(8,2))
+                ttk.Label(group,text='Size and type, one line per size. Example: Small regular summer x2 (no item ID needed)').pack(anchor='w',pady=(8,2))
                 text=tk.Text(group,height=3,wrap='word');text.pack(fill='x');text.insert('1.0',answers.get(key+'.sizes',''));text_fields[key+'.sizes']=text
         def save():
             try:

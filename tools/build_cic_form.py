@@ -18,7 +18,7 @@ def build(path):
     for key in ['Title','Heading 1','Heading 2']:
         doc.styles[key].font.color.rgb=RGBColor(0,0,0)
     doc.add_paragraph('Det 005 Cadet Inventory Card',style='Title')
-    doc.add_paragraph('Report uniforms you currently possess. No skips an entire uniform family or the details for an item you do not have. For items you do have, enter the quantity first, then full item type or item ID | label size | quantity, one line per size. Include summer or all weather and mens or womens where applicable. Footwear and socks are pairs. Staff reviews every card before A.C.E. inventory changes. Records are visible to the Det 005 Cadet Wing group.')
+    doc.add_paragraph('Report uniforms you currently possess. No skips an entire uniform family or the details for an item you do not have. For items you do have, enter the quantity first, then ordinary label sizes, such as Medium regular x2 or 7 3/8, one line per size (no item ID needed). Include summer or all weather and mens or womens where applicable. Footwear and socks are pairs. Staff reviews every card before A.C.E. inventory changes. Records are visible to the Det 005 Cadet Wing group.')
     ordered=[(k,label,[]) for k,label in FIELDS[:4]]
     for family_key,family in FAMILIES:
         ordered.append((family_key+'.has_items',f'Do you currently possess any {family} items?',['Yes','No']))

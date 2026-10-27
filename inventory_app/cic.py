@@ -50,7 +50,7 @@ class CicServiceMixin:
         from .cic_questions import question_for
         return [{'item_no':r['item_no'],'name':r['item_name'],'size':r['size'],
                  'category':r['category'],'sex':r['sex'],'official':bool(r['is_wings']),
-                 'group':question_for(r),'uom':r['uom']}
+                 'group':question_for(r),'uom':r['uom'],'subcategory':r.get('subcategory','')}
                 for r in self.list_wings_catalog()]
 
     def _cic_catalog(self,c):

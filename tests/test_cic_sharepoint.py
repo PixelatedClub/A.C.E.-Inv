@@ -65,6 +65,16 @@ class MicrosoftCicTests(unittest.TestCase):
         answers=dict(self.answers);answers[self.cat['group']+'.sizes']='Mispelled | wrong | 2'
         card,_=self.service.import_microsoft_cic(self.envelope(answers),self.profile,secret='secret')
         self.assertEqual(card['status'],'Held');self.assertEqual(card['lines'][0]['item_no'],'')
+    def test_partial_corrections_keep_lines_and_remain_held(self):
+        answers=dict(self.answers);answers[self.cat['group']+'.count']='3'
+        card,_=self.service.import_microsoft_cic(self.envelope(answers),self.profile,secret='secret')
+        self.assertTrue(card['lines'])
+        before=self.operational()
+        answers['middle_initial']='J'
+        fixed=self.service.correct_microsoft_cic(card['card_id'],answers,approved_by=ADMIN,expected_version=card['version'])
+        self.assertEqual(fixed['status'],'Held');self.assertTrue(fixed['lines'])
+        self.assertEqual(before,self.operational())
+        with self.assertRaises(InventoryError):self.service.preview_cic(card['card_id'],create_new=True)
     def test_family_no_skips_missing_counts_but_conflicting_answers_hold(self):
         answers=dict(self.answers)
         family=self.cat['group'].split('.')[0]

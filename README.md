@@ -1,12 +1,12 @@
 # A.C.E. Inventory System
 
-**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.2).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
+**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.3).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
 
 A.C.E. is a portable AFROTC clothing and equipment inventory system built for simple cadet use. It supports WINGS-ready imports and exports, searchable equipment records, compact barcode labels, scanner-based checkout and return, cadet history, reports, backups, and flash-drive deployment on Windows.
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.9.0-cic.2 (October 26, 2026)**
+**Current source version: 1.9.0-cic.3 (October 26, 2026)**
 
 **CIC intake:** Cadets use the Microsoft-hosted form. Power Automate writes cards to the dedicated SharePoint library, OneDrive syncs them, and ACE receives them for staff approval. Use **Copy Form Link** in Cadet Inventory Cards. The local phone server, LAN links and session codes have been removed. [Setup and limitations](docs/CIC_MICROSOFT.md).
 
