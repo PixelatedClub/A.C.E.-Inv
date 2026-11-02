@@ -18,11 +18,13 @@ class LoanUiMixin:
         ttk.Label(self.loans_tab, text='Choose a return deadline when issuing items. Use Returns to record physical returns.').grid(row=1,column=0,sticky='w')
         controls = ttk.Frame(self.loans_tab)
         controls.grid(row=2,column=0,sticky='ew',pady=10)
+        for column in range(3):controls.columnconfigure(column,weight=1)
         entry=ttk.Entry(controls,textvariable=self.loan_search,width=30)
-        entry.pack(side='left'); entry.bind('<KeyRelease>',lambda e:self.refresh_loans())
-        for label,command in [('Change due date...',self._change_loan_date),('Convert to standard checkout',self._convert_loan_to_checkout),('Return items...',self._return_loan_cadet),('Previous week report',self._monday_report),('Refresh',self.refresh_loans)]:
-            ttk.Button(controls,text=label,command=command).pack(side='left',padx=4)
-        ttk.Checkbutton(controls,text='Include closed',variable=self.loan_show_closed,command=self.refresh_loans).pack(side='left')
+        entry.grid(row=0,column=0,columnspan=2,sticky='ew',pady=(0,6));entry.bind('<KeyRelease>',lambda e:self.refresh_loans())
+        ttk.Checkbutton(controls,text='Include closed',variable=self.loan_show_closed,command=self.refresh_loans).grid(row=0,column=2,sticky='w',padx=8)
+        actions=[('Change due date...',self._change_loan_date),('Convert to standard checkout',self._convert_loan_to_checkout),('Return items...',self._return_loan_cadet),('Previous week report',self._monday_report),('Refresh',self.refresh_loans)]
+        for index,(label,command) in enumerate(actions):
+            ttk.Button(controls,text=label,command=command).grid(row=1+index//3,column=index%3,sticky='ew',padx=3,pady=3)
         frame=ttk.Frame(self.loans_tab); frame.grid(row=3,column=0,sticky='nsew')
         frame.columnconfigure(0,weight=1);frame.rowconfigure(0,weight=1)
         self.loan_columns=['transaction_id','cadet_name','item_name','variant','barcode_id','loan_due_date','loan_status','loan_purpose']
@@ -215,10 +217,6 @@ class LoanUiMixin:
     def _check_loan_reminders(self):
         try:
             if self.current_admin and self.winfo_viewable():
-                overdue=[r for r in self.service.list_loans() if r['overdue']]
                 self.refresh_loans()
-                if overdue:
-                    names=sorted(set(r['cadet_name'] for r in overdue))
-                    self._show_info(f"Loan reminder: {len(overdue)} overdue unit(s) across {len(names)} cadets.\n\n"+'\n'.join(names)+'\n\nOpen Returns > Temporary Loans to review.')
         finally:
             self.after(3600000,self._check_loan_reminders)

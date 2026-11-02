@@ -1,6 +1,6 @@
 # A.C.E. Inventory System
 
-**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.8).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
+**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.9).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
 
 A.C.E. is a portable AFROTC clothing and equipment inventory system built for simple cadet use. It supports WINGS-ready imports and exports, searchable equipment records, compact barcode labels, scanner-based checkout and return, cadet history, reports, backups, and flash-drive deployment on Windows.
 
@@ -8,7 +8,9 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.9.0-cic.8 (November 2, 2026)**
+**Current source version: 1.9.0-cic.9 (November 2, 2026)**
+
+Overdue loan lists stay in **Returns > Temporary Loans**. Settings, Checkout and generator forms scroll vertically. Right-click a panel divider to stack panels vertically or arrange them side by side. **Settings > Personal Appearance / Layout** saves menu, accent and list colors for the signed-in administrator on this computer; another login starts with its own preferences. Colors are applied only after authentication.
 
 Successful actions use an original A.C.E. completion chime and a non-blocking completion popup. Enable or mute it with **Action completion sound**, or use **Preview Sound**, in Settings. Errors use a distinct descending chime with separate **Error sound** and **Preview Error Sound** controls. Both preferences are saved on this computer.
 
@@ -55,7 +57,7 @@ Entra sign-in, Azure SQL hosting adapters, SharePoint publishing, and migration 
 are implemented. University configuration, deployment, and live acceptance remain
 pending; see [deployment instructions](shared_beta/DEPLOYMENT.md).
 
-Checkout can issue the current queued barcodes as either a normal checkout or a temporary loan. Loan Queued Items asks for a custom return date or offers two-, three-, and four-week presets. Returns > Temporary Loans shows due dates and overdue status; opening the app and hourly checks while it remains open remind the signed-in administrator about overdue items. Reminders require A.C.E. to be running. Returns and permanent dispositions close the original checkout and remove it from outstanding reminders.
+Checkout can issue the current queued barcodes as either a normal checkout or a temporary loan. Loan Queued Items asks for a custom return date or offers two-, three-, and four-week presets. Returns > Temporary Loans shows due dates and overdue status; opening Returns and hourly checks while the app remains open refresh the overdue list there. Returns and permanent dispositions close the original checkout and remove it from outstanding reminders.
 
 Full activity reports use the same browser format: a summary with BLUF, key metrics, daily activity and major activities, followed by navigable detail sections. COA is omitted. The Previous Week Report automatically selects the prior Monday-Sunday; Date-Range Report uses the dates you choose. Reports are generated on demand; no email is sent automatically.
 

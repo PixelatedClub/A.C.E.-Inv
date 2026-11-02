@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.9 - Returns and personal appearance - 2026-11-02
+
+- Keep overdue cadet loan lists in Returns instead of opening reminder popups or expanding the global status bar.
+- Add vertical panel arrangements, divider context controls, vertically scrolling Settings, Checkout and generator forms, and a resizable main window with wrapped status text.
+- Add Personal Appearance / Layout settings scoped to the authenticated administrator and inventory on this computer. Apply saved colors after login and restore defaults for other users.
+
 ## 1.9.0-cic.8 - Custom error sound - 2026-11-02
 
 - Add a distinct descending error chime, with separate mute and preview controls in Settings.

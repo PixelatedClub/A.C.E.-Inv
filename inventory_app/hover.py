@@ -3,7 +3,7 @@ HOVER_TAG = '__ace_hover__'
 
 
 def install_hover(tree):
-    tree.tag_configure(HOVER_TAG,background='#dceafb')
+    tree.tag_configure(HOVER_TAG,background='#dceafb',foreground='#111111')
     current=[None]
     def clear(event=None):
         if current[0] and tree.exists(current[0]):

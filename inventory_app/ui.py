@@ -196,7 +196,8 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
 
         self.title(APP_TITLE)
         self.geometry(f"{min(1500,self.winfo_screenwidth()-80)}x{min(920,self.winfo_screenheight()-100)}")
-        self.minsize(1000, 640)
+        self.minsize(800, 480)
+        self.resizable(True, True)
         self._configure_window_icon()
         self._configure_style()
         self._create_variables()
@@ -484,7 +485,8 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         from .shortcuts import install_shortcuts
         install_shortcuts(self)
 
-        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w")
+        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", wraplength=760)
+        self.bind("<Configure>", lambda event: status_bar.configure(wraplength=max(200, event.width-30)) if event.widget is self else None, add="+")
         status_bar.grid(row=1, column=0, sticky="ew", padx=10, pady=(6, 10))
 
     def _build_dashboard_tab(self) -> None:
@@ -555,7 +557,11 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self.generator_split = ResizableSplit(self.generator_stack,fraction=0.5)
         self.generator_stack.add(self.generator_split,minsize=280,stretch='always')
         config_frame = ttk.LabelFrame(self.generator_split, text="Generate Barcode Labels", padding=12)
-        self.generator_split.add(config_frame,minsize=350,stretch='always')
+        self.generator_split.add(config_frame,minsize=200,stretch='always')
+        from .layout import ScrollablePanel
+        config_scroller = ScrollablePanel(config_frame, stretch=True)
+        config_scroller.pack(fill='both', expand=True)
+        config_frame = config_scroller.body
         config_frame.columnconfigure(1, weight=1)
 
         ttk.Label(config_frame, text="Quick Find").grid(row=0, column=0, sticky="w")
@@ -918,6 +924,13 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self.wings_export_tree.grid(row=0, column=0, sticky="nsew")
 
     def _build_checkout_workspace(self, parent) -> None:
+        from .layout import ScrollablePanel
+        workspace_host = parent
+        scroller = ScrollablePanel(parent, stretch=True)
+        scroller.grid(row=0, column=0, sticky="nsew")
+        parent = scroller.body
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
         checkout_frame = ttk.LabelFrame(parent, text="Checkout Items To A Cadet", padding=12)
         checkout_frame.grid(row=0, column=0, sticky="nsew")
         checkout_frame.columnconfigure(0, weight=1)
@@ -989,8 +1002,8 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self.checkout_notes_text = tk.Text(checkout_frame, height=3, wrap="word")
         self.checkout_notes_text.grid(row=10, column=0, sticky="ew", pady=(6, 0))
 
-        checkout_actions = ttk.Frame(checkout_frame)
-        checkout_actions.grid(row=11, column=0, sticky="ew", pady=(12, 0))
+        checkout_actions = ttk.Frame(workspace_host)
+        checkout_actions.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         for index in range(4):
             checkout_actions.columnconfigure(index, weight=1)
         ttk.Button(checkout_actions, text="Check Out Queued Items", command=self._submit_checkout).grid(
@@ -1586,10 +1599,14 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         )
 
     def _build_settings_tab(self) -> None:
-        self.settings_tab.columnconfigure(0, weight=1)
-        self.settings_tab.rowconfigure(2, weight=1)
+        from .layout import ScrollablePanel
+        scroller = ScrollablePanel(self.settings_tab, stretch=True)
+        scroller.pack(fill="both", expand=True)
+        settings_body = scroller.body
+        settings_body.columnconfigure(0, weight=1)
+        settings_body.rowconfigure(2, weight=1)
 
-        frame = ttk.LabelFrame(self.settings_tab, text="Application Settings", padding=12)
+        frame = ttk.LabelFrame(settings_body, text="Application Settings", padding=12)
         frame.grid(row=0, column=0, sticky="nsew")
         frame.columnconfigure(1, weight=1)
 
@@ -1666,7 +1683,11 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         ttk.Button(error_controls, text='Preview Error Sound',
                    command=lambda: play(preview=True, kind='error')).pack(side='left', padx=(12, 0))
 
-        security_frame = ttk.LabelFrame(self.settings_tab, text="Admin Security", padding=12)
+        from .appearance import open_preferences
+        ttk.Button(frame, text='Personal Appearance / Layout...',
+                   command=lambda: open_preferences(self)).grid(row=9, column=0, columnspan=3, sticky='w', pady=(12, 0))
+
+        security_frame = ttk.LabelFrame(settings_body, text="Admin Security", padding=12)
         security_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         security_frame.columnconfigure(1, weight=1)
         security_frame.columnconfigure(3, weight=1)
@@ -1704,7 +1725,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self.admin_code_toggle_button.grid(row=0, column=1, padx=(6, 0))
 
         admin_buttons = ttk.Frame(security_frame)
-        admin_buttons.grid(row=1, column=4, sticky="e")
+        admin_buttons.grid(row=2, column=0, columnspan=5, sticky="w", pady=(8, 0))
         for index in range(4):
             admin_buttons.columnconfigure(index, weight=1)
         ttk.Button(admin_buttons, text="Save Admin", command=self._save_admin_code).grid(row=0, column=0, padx=(0, 6))
@@ -1713,10 +1734,10 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         ttk.Button(admin_buttons, text="Switch Admin", command=self._switch_admin).grid(row=0, column=3)
 
         admin_tree_frame = ttk.Frame(security_frame)
-        admin_tree_frame.grid(row=2, column=0, columnspan=5, sticky="nsew", pady=(10, 0))
+        admin_tree_frame.grid(row=3, column=0, columnspan=5, sticky="nsew", pady=(10, 0))
         admin_tree_frame.columnconfigure(0, weight=1)
         admin_tree_frame.rowconfigure(0, weight=1)
-        security_frame.rowconfigure(2, weight=1)
+        security_frame.rowconfigure(3, weight=1)
 
         self.admin_tree = self._create_tree(
             admin_tree_frame,
@@ -1728,7 +1749,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             row=3, column=0, columnspan=5, sticky="w", pady=(8, 0)
         )
 
-        transfer_frame = ttk.LabelFrame(self.settings_tab, text="Transfer Device", padding=12)
+        transfer_frame = ttk.LabelFrame(settings_body, text="Transfer Device", padding=12)
         transfer_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         transfer_frame.columnconfigure(0, weight=1)
         ttk.Label(
@@ -3406,6 +3427,8 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
 
     def _set_current_admin(self, admin_record: dict[str, Any]) -> None:
         self.current_admin = admin_record
+        from .appearance import apply_preferences
+        apply_preferences(self)
         label = str(admin_record.get("label") or "").strip()
         if not label:
             role = str(admin_record.get("role") or "").strip()
