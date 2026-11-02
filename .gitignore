@@ -56,3 +56,8 @@ cic_microsoft_profile.json
 ace_usb.json
 ace_install.json
 usb_registry.json
+
+# Independent return workspaces contain local cadet references and notes
+return_drafts.json
+return_drafts.json.tmp
+return_drafts.json.*.tmp

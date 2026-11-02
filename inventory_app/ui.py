@@ -152,7 +152,9 @@ from .checkout_drafts import CheckoutDraftMixin
 from .index_barcodes import IndexBarcodeMixin
 from .cic_ui import CicUiMixin
 
-class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
+from .return_drafts import ReturnDraftMixin
+
+class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcodeMixin, LoanUiMixin, tk.Tk):
     def __init__(self, settings: AppSettings, *, preload_catalog: bool = False) -> None:
         super().__init__()
         self.settings = settings
@@ -1019,18 +1021,8 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             row=0, column=3, sticky="ew", padx=(4, 0)
         )
 
-    def _build_returns_tab(self) -> None:
-        self.returns_notebook = ttk.Notebook(self.returns_tab)
-        self.returns_notebook.grid(row=0,column=0,columnspan=2,sticky='nsew')
-        self.standard_returns_tab = ttk.Frame(self.returns_notebook,padding=8)
-        self.standard_returns_tab.columnconfigure(0,weight=1)
-        self.standard_returns_tab.rowconfigure(0,weight=1)
-        self.returns_notebook.add(self.standard_returns_tab,text='Return Items')
-        self.returns_tab.columnconfigure(0, weight=1)
-        self.returns_tab.columnconfigure(1, weight=2)
-        self.returns_tab.rowconfigure(0, weight=1)
-
-        self.returns_split = ResizableSplit(self.standard_returns_tab,fraction=0.35)
+    def _build_return_workspace(self, parent) -> None:
+        self.returns_split = ResizableSplit(parent,fraction=0.35)
         self.returns_split.grid(row=0,column=0,columnspan=2,sticky='nsew')
         cadet_frame = ttk.LabelFrame(self.returns_split, text="1. Who Is Returning Items?", padding=12)
         self.returns_split.add(cadet_frame,minsize=260,stretch='always')
@@ -1072,7 +1064,13 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             text="2. Select Items From That Cadet's Inventory",
             padding=12,
         )
-        self.returns_split.add(return_frame,minsize=350,stretch='always')
+        self.returns_split.add(return_frame,minsize=250,stretch='always')
+        return_host=return_frame
+        return_host.columnconfigure(0,weight=1);return_host.rowconfigure(0,weight=1)
+        from .layout import ScrollablePanel
+        scroller=ScrollablePanel(return_host,stretch=True)
+        scroller.grid(row=0,column=0,sticky='nsew')
+        return_frame=scroller.body
         return_frame.columnconfigure(0, weight=1)
         return_frame.rowconfigure(3, weight=1)
 
@@ -1145,11 +1143,11 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         )
 
         ttk.Label(return_frame, text="Return / Condition Notes").grid(row=5, column=0, sticky="w")
-        self.return_notes_text = tk.Text(return_frame, height=6, wrap="word")
+        self.return_notes_text = tk.Text(return_frame, height=3, wrap="word")
         self.return_notes_text.grid(row=6, column=0, sticky="ew", pady=(6, 0))
 
-        return_actions = ttk.Frame(return_frame)
-        return_actions.grid(row=7, column=0, sticky="ew", pady=(12, 0))
+        return_actions = ttk.Frame(return_host)
+        return_actions.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         return_actions.columnconfigure(0, weight=1)
         return_actions.columnconfigure(1, weight=1)
         ttk.Button(return_actions, text="Return Selected Items", command=self._submit_return).grid(
@@ -2779,7 +2777,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self.fitting_size_value_combo.configure(values=[])
         self.fitting_notes_var.set("")
 
-    def refresh_return_cadets(self) -> None:
+    def _refresh_return_cadets(self) -> None:
         rows = self.service.list_cadets(search=self.return_cadet_search_var.get())
         rows = sorted(
             rows,
@@ -2800,7 +2798,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             and self.selected_return_cadet_id in self.return_cadet_cache
         ):
             self.return_cadet_tree.selection_set(str(self.selected_return_cadet_id))
-            self._load_return_cadet_details(self.selected_return_cadet_id)
+            self._load_return_cadet_details(self.selected_return_cadet_id, preserve_selection=True, focus=False)
         elif self.selected_return_cadet_id is not None:
             self._clear_return_form(clear_search=False)
         elif not rows:
@@ -5090,6 +5088,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self._focus_checkout_scan()
 
     def _on_return_cadet_selected(self, _event: tk.Event | None = None) -> None:
+        if _event is not None and _event.widget is not self.return_cadet_tree:return
         selection = self.return_cadet_tree.selection()
         if not selection:
             return
@@ -5097,9 +5096,12 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             cadet_id = int(selection[0])
         except (TypeError, ValueError):
             return
+        if cadet_id == self.selected_return_cadet_id:return
         self._run_action(lambda: self._load_return_cadet_details(cadet_id), success_message=None)
 
-    def _load_return_cadet_details(self, cadet_id: int) -> None:
+    def _load_return_cadet_details(self, cadet_id: int, *, preserve_selection=False, focus=True) -> None:
+        selected = self._selected_return_transaction_ids() if preserve_selection else []
+        scan, quantity = self.return_scan_var.get(), self.return_qty_var.get()
         details = self.service.get_cadet_details(cadet_id)
         self.selected_return_cadet_id = int(cadet_id)
         self.return_cadet_details = details
@@ -5118,8 +5120,14 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             ],
             details["current_items"],
         )
+        if preserve_selection:
+            self._restore_return_selection(self.return_inventory_tree, selected)
+            self.return_scan_var.set(scan);self.return_qty_var.set(quantity)
         self._update_return_summary()
-        self.return_scan_entry.focus_set()
+        self._capture_return_draft()
+        self._rename_return_draft(self._active_return_key)
+        self._schedule_return_draft_save()
+        if focus:self.return_scan_entry.focus_set()
 
     def _update_return_summary(self) -> None:
         if self.selected_return_cadet_id is None or self.return_cadet_details is None:
@@ -5284,6 +5292,9 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         )
         if clear_search:
             self.refresh_return_cadets()
+        self._capture_return_draft()
+        self._rename_return_draft(self._active_return_key)
+        self._schedule_return_draft_save()
         self.return_cadet_search_entry.focus_set()
 
     def _export_report(self) -> None:

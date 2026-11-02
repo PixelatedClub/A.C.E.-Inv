@@ -22,7 +22,7 @@ class LoanUiMixin:
         entry=ttk.Entry(controls,textvariable=self.loan_search,width=30)
         entry.grid(row=0,column=0,columnspan=2,sticky='ew',pady=(0,6));entry.bind('<KeyRelease>',lambda e:self.refresh_loans())
         ttk.Checkbutton(controls,text='Include closed',variable=self.loan_show_closed,command=self.refresh_loans).grid(row=0,column=2,sticky='w',padx=8)
-        actions=[('Change due date...',self._change_loan_date),('Convert to standard checkout',self._convert_loan_to_checkout),('Return items...',self._return_loan_cadet),('Previous week report',self._monday_report),('Refresh',self.refresh_loans)]
+        actions=[('Change due date...',self._change_loan_date),('Convert to standard checkout',self._convert_loan_to_checkout),('Return Selected to Inventory',self._return_selected_loans),('Open cadet returns...',self._return_loan_cadet),('Previous week report',self._monday_report),('Refresh',self.refresh_loans)]
         for index,(label,command) in enumerate(actions):
             ttk.Button(controls,text=label,command=command).grid(row=1+index//3,column=index%3,sticky='ew',padx=3,pady=3)
         frame=ttk.Frame(self.loans_tab); frame.grid(row=3,column=0,sticky='nsew')
@@ -187,11 +187,25 @@ class LoanUiMixin:
         ids=self.loan_tree.selection()
         if not ids:self._show_error('Select a loan first.');return
         rows={str(r['transaction_id']):r for r in self.service.list_loans(include_closed=True)}
+        if ids[0] not in rows:self._show_error('This loan no longer exists. Refresh the list.');return
         cadet_id=rows[ids[0]]['cadet_id']
-        self.notebook.select(self.returns_tab)
-        self.returns_notebook.select(self.standard_returns_tab)
-        self.selected_return_cadet_id=cadet_id
-        self._load_return_cadet_details(cadet_id)
+        selected=[int(i) for i in ids if i in rows and rows[i]['cadet_id']==cadet_id and not rows[i]['return_time']]
+        self._open_return_for_cadet(cadet_id,selected)
+
+    def _return_selected_loans(self):
+        ids=[int(i) for i in self.loan_tree.selection()]
+        if not ids:self._show_error('Select one or more loan items to return.');return
+        loans={int(r['transaction_id']):r for r in self.service.list_loans(include_closed=True)}
+        if any(i not in loans or loans[i]['return_time'] for i in ids):
+            self._show_error('One or more selected loans are already closed or changed. Refresh the list.');return
+        cadets={loans[i]['cadet_id'] for i in ids}
+        if len(cadets)!=1:
+            self._show_error('Select loans for one cadet at a time. Use separate return tabs for multiple cadets.');return
+        cadet_id=next(iter(cadets));name=loans[ids[0]]['cadet_name']
+        if not messagebox.askyesno('Return Loan Items',f'Return {len(ids)} selected loan unit(s) for {name} to available inventory?',parent=self):return
+        self._run_action(lambda:self.service.return_cadet_items(cadet_id=cadet_id,transaction_ids=ids,approved_by=self.current_admin),
+            success_message=f'Returned {len(ids)} loan unit(s) for {name} to inventory. History and reports were updated.',
+            on_success=lambda _result:self.refresh_all_views())
 
     def _convert_loan_to_checkout(self):
         ids = [int(value) for value in self.loan_tree.selection()]

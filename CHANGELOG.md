@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.12 - Multiple cadet returns - 2026-11-02
+
+- Add independent return tabs with cadet identity, selected transaction rows, scan inputs and notes preserved across switches and restarts. Reuse available tab numbers and keep return actions visible.
+- Refresh every return workspace after inventory changes, retaining other cadets and pruning closed selections.
+- Add Return Selected to Inventory in Temporary Loans with confirmation, existing approval/history handling and duplicate-return protection.
+
 ## 1.9.0-cic.11 - Color presets and live preview - 2026-11-02
 
 - Add six built-in color presets and live previews for complete typed colors, selected colors and presets.

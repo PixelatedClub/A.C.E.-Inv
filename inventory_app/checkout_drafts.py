@@ -37,6 +37,7 @@ class CheckoutDraftMixin:
 
     def _close_with_checkout_drafts(self):
         self._save_checkout_drafts()
+        if hasattr(self,"_save_return_drafts"):self._save_return_drafts()
         self.destroy()
 
     def _new_checkout_draft(self,*,saved=None,activate=True):
