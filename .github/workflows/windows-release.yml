@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag, for example v1.9.0-beta.2
+        description: Release tag, for example v1.9.0-cic.6
         required: true
-        default: v1.9.0-beta.2
+        default: v1.9.0-cic.6
       prerelease:
         description: Mark as a beta/prerelease (does not replace the latest stable download)
         type: boolean
@@ -70,15 +70,22 @@ jobs:
           $release = Join-Path $env:GITHUB_WORKSPACE "release"
           $exe = Join-Path $release "A.C.E.exe"
           $zip = Join-Path $release "A.C.E.zip"
-          Compress-Archive -LiteralPath $exe -DestinationPath $zip -CompressionLevel Optimal -Force
+          $setup = Join-Path $release "Set Up A.C.E.exe"
+          $manifest = Join-Path $release "ace_release.json"
+          $settings = Join-Path $release "app_settings.json"
+          Compress-Archive -LiteralPath $exe,$setup,$manifest,$settings -DestinationPath $zip -CompressionLevel Optimal -Force
           $exeHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
           $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+          $setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+          $manifestHash = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash
           @(
               "$zipHash  A.C.E.zip"
-              "$exeHash  A.C.E.exe (inside ZIP)"
+              "$exeHash  A.C.E.exe"
+              "$setupHash  Set Up A.C.E.exe"
+              "$manifestHash  ace_release.json"
           ) | Set-Content -LiteralPath (Join-Path $release "SHA256SUMS.txt") -Encoding ascii
           @"
-          A.C.E. is a portable Team Shapes Windows application. Extract A.C.E.zip before running A.C.E.exe.
+          A.C.E. is a Team Shapes Windows inventory application. The prepared USB setup installs it on the computer so the USB can be removed. Program updates preserve local inventory and retain one previous program version. This generic release bundle contains no inventory or cadet data; deployment seeds and CIC profiles are supplied separately.
 
           This release is intentionally unsigned. Windows may display Unknown publisher or a Microsoft Defender SmartScreen warning. Team Shapes appears in the executable's file metadata, but it is not a Windows-verified publisher.
 
@@ -92,6 +99,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           IS_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          $releaseArgs = @('release', 'create', $env:RELEASE_TAG, 'release/A.C.E.zip', 'release/SHA256SUMS.txt', '--title', "A.C.E. Inventory $env:RELEASE_TAG", '--notes-file', 'release/RELEASE_NOTES.md')
+          $releaseArgs = @('release', 'create', $env:RELEASE_TAG, 'release/A.C.E.zip', 'release/A.C.E.exe', 'release/Set Up A.C.E.exe', 'release/ace_release.json', 'release/SHA256SUMS.txt', '--title', "A.C.E. Inventory $env:RELEASE_TAG", '--notes-file', 'release/RELEASE_NOTES.md')
           if ($env:IS_PRERELEASE -eq 'true') { $releaseArgs += '--prerelease' }
           gh @releaseArgs

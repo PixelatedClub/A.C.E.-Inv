@@ -30,6 +30,8 @@ smoke_test_*/
 release/*.exe
 release/*.zip
 release/SHA256SUMS.txt
+release/ace_release.json
+release/app_settings.json
 
 # Temporary and inspection files
 outputs/
@@ -52,4 +54,5 @@ checkout_drafts.json.tmp
 portable_data/cic_microsoft_profile.json
 cic_microsoft_profile.json
 ace_usb.json
+ace_install.json
 usb_registry.json

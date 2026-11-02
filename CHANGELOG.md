@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.6 - Local installation and updates - 2026-11-02
+
+- Install the prepared USB inventory onto the computer once, then run without the USB. Later program updates never reseed or overwrite the working inventory.
+- Check the connected USB and optionally GitHub CIC releases with existing private-repository access. Verify version, size and SHA-256 before replacing the program; retain the installed version when unavailable.
+- Keep one previous managed program archive, recover interrupted updates, and offer cleanup separately from inventory recovery backups.
+
 ## 1.9.0-cic.5 - USB setup and launcher - 2026-11-02
 
 - Add an optional per-computer USB setup utility with a verified database backup, desktop shortcut and computer-specific CIC intake configuration.

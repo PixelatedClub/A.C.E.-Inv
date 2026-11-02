@@ -1,4 +1,4 @@
-"""Optional per-computer USB setup and a drive-letter-independent launcher."""
+"""Install locally from a USB and launch with optional verified program updates."""
 from contextlib import closing
 from datetime import datetime
 import base64
@@ -19,7 +19,9 @@ from .usb_portable import (MARKER, atomic_json, new_marker, read_json, read_mark
                            validate_package, volume_serial, locate_package)
 
 REGISTRY=DEVICE_SETTINGS_DIR/'usb_registry.json'
-LAUNCHER=DEVICE_SETTINGS_DIR/'USB Launcher'/'ACE USB Launcher.exe'
+LEGACY_LAUNCHER=DEVICE_SETTINGS_DIR/'USB Launcher'/'ACE USB Launcher.exe'
+LAUNCHER=(DEVICE_SETTINGS_DIR/'Launcher'/'ACE Launcher.exe').resolve()
+INSTALLS=(DEVICE_SETTINGS_DIR/'Installed').resolve()
 
 
 def known_folder(identifier, fallback):
@@ -56,7 +58,8 @@ def shortcut_details(path):
 
 
 def create_shortcut(desktop, launcher, package, recovery):
-    path=Path(desktop)/'ACE USB.lnk'
+    title='ACE Inventory' if package.get('mode')=='installed' else 'ACE USB'
+    path=Path(desktop)/(title+'.lnk')
     if path.exists():
         old=shortcut_details(path)
         launcher_target=str(Path(launcher).resolve()).casefold()
@@ -64,14 +67,21 @@ def create_shortcut(desktop, launcher, package, recovery):
         old_target=str(Path(old.get('target','')).resolve()).casefold()
         another_package=old_target==launcher_target and old.get('arguments','').strip()!='--launch '+package['package_id']
         if old_target not in expected or another_package:
-            path=Path(desktop)/('ACE USB - '+package['package_id'][:8]+'.lnk')
+            path=Path(desktop)/(title+' - '+package['package_id'][:8]+'.lnk')
             if path.exists():raise FileExistsError('A shortcut with this name already exists. Existing shortcuts were retained.')
         else:shutil.copy2(path,Path(recovery)/path.name)
     script='$s=New-Object -ComObject WScript.Shell\n$l=$s.CreateShortcut('+quote(path)+')\n'
     script+='$l.TargetPath='+quote(launcher)+'\n$l.Arguments='+quote('--launch '+package['package_id'])+'\n'
-    script+='$l.WorkingDirectory='+quote(Path(launcher).parent)+'\n$l.Description='+quote('Find this A.C.E. USB and open its inventory')+'\n'
+    script+='$l.WorkingDirectory='+quote(Path(launcher).parent)+'\n$l.Description='+quote('Open A.C.E. inventory installed on this computer' if package.get('mode')=='installed' else 'Find this A.C.E. USB and open its inventory')+'\n'
     script+='$l.IconLocation='+quote(str(launcher)+',0')+'\n$l.Save()'
     powershell(script)
+    if package.get('mode')=='installed':
+        legacy=Path(desktop)/'ACE USB.lnk'
+        if legacy.exists():
+            old=shortcut_details(legacy)
+            owned=str(Path(old.get('target','')).resolve()).casefold()==str(LEGACY_LAUNCHER.resolve()).casefold()
+            if owned and old.get('arguments','').strip()=='--launch '+package['package_id']:
+                shutil.copy2(legacy,Path(recovery)/legacy.name);legacy.unlink()
     return path
 
 
@@ -125,7 +135,12 @@ def configure_computer(*args,**kwargs):
         return _configure_computer(*args,**kwargs)
 
 
-def _configure_computer(root,backup_folder,*,cic_enabled=False,inbox_folder='',launcher_source=None,
+def _configure_computer(root,backup_folder,*,install_locally=True,**kwargs):
+    if install_locally:return _configure_local_computer(root,backup_folder,**kwargs)
+    return _configure_usb_computer(root,backup_folder,**kwargs)
+
+
+def _configure_usb_computer(root,backup_folder,*,cic_enabled=False,inbox_folder='',launcher_source=None,
                        registry_path=REGISTRY,launcher_path=LAUNCHER,device_path=DEVICE_SETTINGS_PATH,desktop=None):
     check=validate_package(root,require_marker=False);root=check['root'];backup_folder=Path(backup_folder).expanduser().resolve()
     if check['free_bytes']<16*1024*1024:raise ValueError('The USB needs at least 16 MB of free space before setup.')
@@ -162,11 +177,116 @@ def _configure_computer(root,backup_folder,*,cic_enabled=False,inbox_folder='',l
     return dict(package_id=marker['package_id'],shortcut=str(shortcut),backup=str(backup),root=str(root),recovery=str(recovery))
 
 
+def _source_update(registration):
+    """A connected USB supplies program updates only; its database is not read."""
+    from .usb_portable import drive_roots
+    relative=Path(registration.get('relative_folder',''))
+    if relative.is_absolute() or '..' in relative.parts:return None
+    matches=[]
+    for drive in drive_roots():
+        path=drive/relative
+        try:
+            marker=read_marker(path)
+            if marker and marker['package_id']==registration['package_id'] and (not registration.get('volume_serial') or volume_serial(path)==registration['volume_serial']):matches.append(path)
+        except (OSError,ValueError):continue
+    return matches[0] if len(matches)==1 else None
+
+
+def refresh_program(registration,root,*,force_online=False):
+    from .installation import release,update_program,recover_program,cleanup_versions,version_key
+    from .program_updates import GitHubUpdates,existing_token,discard_download
+    root=Path(root);recover_program(root);validate_package(root)
+    results=[];source=_source_update(registration)
+    if source:
+        try:results.append(update_program(source,root,backup_folder=registration['backup_folder'],helper=LAUNCHER))
+        except Exception:results.append({'status':'The USB update could not be verified; the installed program was retained.'})
+    status=read_json(root/'update_status.json',{})
+    now=datetime.now().astimezone()
+    try:due=(now-datetime.fromisoformat(status['checked_at'])).total_seconds()>6*3600
+    except (KeyError,ValueError,TypeError):due=True
+    if registration.get('online_updates') and (force_online or due):
+        downloaded=None
+        try:
+            downloaded=GitHubUpdates(existing_token()).fetch_newer(release(root)['version'],root/'update_cache')
+            if downloaded:
+                results.append(update_program(downloaded,root,backup_folder=registration['backup_folder'],helper=LAUNCHER))
+                if source:
+                    try:update_program(downloaded,source,helper=source/'Set Up A.C.E.exe')
+                    except Exception:pass
+            status=dict(checked_at=now.isoformat(),status='Current' if not downloaded else 'Updated',version=release(root)['version'])
+        except Exception:
+            status=dict(checked_at=now.isoformat(),status='GitHub unavailable; the installed program remains usable.',version=release(root)['version'])
+        finally:
+            if downloaded:discard_download(downloaded)
+        atomic_json(root/'update_status.json',status)
+    cleanup=cleanup_versions(root)
+    return dict(version=release(root)['version'],updates=results,cleanup=cleanup,online_status=status.get('status','Not checked'))
+
+
+def _configure_local_computer(root,backup_folder,*,cic_enabled=False,inbox_folder='',online_updates=False,
+        launcher_source=None,registry_path=REGISTRY,launcher_path=LAUNCHER,device_path=DEVICE_SETTINGS_PATH,
+        desktop=None,install_base=INSTALLS):
+    from .installation import install_local,release,archive_program,cleanup_versions,digest,version_key
+    from .config import APP_VERSION
+    root=Path(root).resolve();release(root)
+    marker=read_marker(root) or new_marker();package_id=marker['package_id']
+    target=Path(install_base).resolve()/package_id;backup_folder=Path(backup_folder).expanduser().resolve()
+    validate_backup_location(root,backup_folder)
+    if backup_folder.is_relative_to(target):raise ValueError('Choose a backup folder outside the managed program installation.')
+    if cic_enabled:
+        from .cic_sharepoint import load_profile
+        profile=(target if target.exists() else root)/'portable_data/cic_microsoft_profile.json'
+        load_profile(profile)
+        inbox=Path(inbox_folder).expanduser().resolve()
+        if not inbox.is_dir() or inbox.is_relative_to(root):raise ValueError('Choose this computer\'s synchronized CIC inbox.')
+        inbox_folder=str(inbox)
+    if launcher_source is None and not getattr(sys,'frozen',False):raise ValueError('Run Set Up A.C.E.exe from the USB.')
+    source=Path(launcher_source or sys.executable).resolve()
+    if not source.is_file() or source.suffix.casefold()!='.exe':raise ValueError('The setup application is missing.')
+    registry=registry_data(registry_path);device=read_json(device_path,{})
+    old_registration=registry['packages'].get(package_id,{})
+    result=install_local(root,target,package_id,backup_folder,helper=launcher_path)
+    registration=dict(package_id=package_id,mode='installed',install_root=str(target),
+        relative_folder=str(root.relative_to(Path(root.anchor))),volume_serial=volume_serial(root),last_root=str(root),
+        backup_folder=str(backup_folder),cic_enabled=bool(cic_enabled),inbox_folder=str(inbox_folder),
+        online_updates=bool(online_updates),setup_version=APP_VERSION)
+    recovery=target/'setup_recovery'/datetime.now().strftime('%Y%m%d_%H%M%S_%f');recovery.mkdir(parents=True)
+    for old in (Path(device_path),Path(registry_path)):
+        if old.exists():shutil.copy2(old,recovery/old.name)
+    launcher_path=Path(launcher_path);launcher_path.parent.mkdir(parents=True,exist_ok=True)
+    installed_setup=read_json(Path(launcher_path).parent/'setup_version.json',{})
+    setup_is_newer=version_key(installed_setup.get('version','0.0.0'))<=version_key(APP_VERSION)
+    if source!=launcher_path.resolve() and setup_is_newer and (not launcher_path.exists() or digest(source)!=digest(launcher_path)):
+        if launcher_path.exists() and not result.get('previous'):archive_program(target,launcher_path)
+        staged=launcher_path.with_suffix('.new.exe');shutil.copy2(source,staged);staged.replace(launcher_path)
+        atomic_json(launcher_path.parent/'setup_version.json',dict(version=APP_VERSION,sha256=digest(launcher_path)))
+    registration['setup_version']=APP_VERSION if setup_is_newer else installed_setup['version']
+    if read_marker(root) is None:atomic_json(root/MARKER,marker)
+    shortcut=create_shortcut(desktop or desktop_folder(),launcher_path,registration,recovery)
+    registry['packages'][package_id]=registration;atomic_json(registry_path,registry)
+    atomic_json(device_path,machine_settings(device,registration,target))
+    update=refresh_program(registration,target,force_online=True)
+    cleanup_versions(root);cleanup_versions(target)
+    return dict(result,package_id=package_id,shortcut=str(shortcut),recovery=str(recovery),update=update,root=str(target))
+
+
 def launch_registered(package_id,*,registry_path=REGISTRY,device_path=DEVICE_SETTINGS_PATH,roots=None,start=None):
     registry=registry_data(registry_path)
     registration=registry['packages'].get(package_id)
     if not registration:raise ValueError('This USB has not been set up on this computer. Run Set Up A.C.E.exe from the USB.')
     if registration.get('package_id')!=package_id:raise ValueError('The USB registration is inconsistent. Run setup again.')
+    if registration.get('mode')=='installed':
+        from .installation import recover_program,release
+        from .single_instance import SingleInstanceGuard
+        root=Path(registration['install_root']);marker=read_marker(root)
+        if not marker or marker['schema']!='ace.install.v1' or marker['package_id']!=package_id:raise ValueError('The computer installation is missing. Run setup again; no other inventory was opened.')
+        with SingleInstanceGuard.acquire(r'Local\TeamShapes.ACE.InventorySystem') as guard:
+            if not guard.is_primary:raise ValueError('A.C.E. is already running. Close the current copy before opening this inventory.')
+            recover_program(root);validate_package(root);release(root)
+            refresh_program(registration,root)
+            atomic_json(device_path,machine_settings(read_json(device_path,{}),registration,root))
+        (start or subprocess.Popen)([str(root/'A.C.E.exe'),'--installed-package',package_id],cwd=str(root))
+        return root
     root=locate_package(registration,roots)
     atomic_json(device_path,machine_settings(read_json(device_path,{}),registration,root))
     (start or subprocess.Popen)([str(root/'A.C.E.exe'),'--usb-package',package_id],cwd=str(root))
@@ -176,20 +296,26 @@ def launch_registered(package_id,*,registry_path=REGISTRY,device_path=DEVICE_SET
 def build_window(root, executable=None):
     import tkinter as tk
     from tkinter import ttk,filedialog,messagebox
-    window=tk.Tk();window.title('Set Up A.C.E.');window.geometry('760x440');window.minsize(640,410)
+    window=tk.Tk();window.title('Install or Update A.C.E.');window.geometry('800x500');window.minsize(720,460)
     frame=ttk.Frame(window,padding=22);frame.pack(fill='both',expand=True);frame.columnconfigure(1,weight=1)
-    ttk.Label(frame,text='Set up A.C.E. on this computer',font=('Segoe UI',16,'bold')).grid(row=0,column=0,columnspan=3,sticky='w',pady=(0,12))
-    ttk.Label(frame,text='Create a USB shortcut and configure this computer’s backups and optional CIC intake.',wraplength=690).grid(row=1,column=0,columnspan=3,sticky='w',pady=(0,14))
+    ttk.Label(frame,text='Install A.C.E. on this computer',font=('Segoe UI',16,'bold')).grid(row=0,column=0,columnspan=3,sticky='w',pady=(0,12))
+    ttk.Label(frame,text='Install or update the program, then remove the USB. Your inventory stays on this computer. One previous program version is retained.',wraplength=730).grid(row=1,column=0,columnspan=3,sticky='w',pady=(0,14))
     package=tk.StringVar(value=str(root));backup=tk.StringVar(value=str(default_backup()))
     old=load_device_settings().get('cic_microsoft',{})
     cic=tk.BooleanVar(value=bool(old.get('enabled') and Path(old.get('inbox_path','')).is_dir()))
-    inbox=tk.StringVar(value=old.get('inbox_path',''));status=tk.StringVar(value='Choose the A.C.E. folder on your USB, then set up this computer.')
+    try:
+        identity=read_marker(root)
+        preference=registry_data()['packages'].get(identity['package_id'],{}) if identity else {}
+    except (OSError,ValueError):preference={}
+    online=tk.BooleanVar(value=preference.get('online_updates',True))
+    inbox=tk.StringVar(value=old.get('inbox_path',''));status=tk.StringVar(value='Choose the A.C.E. package folder on your USB, then install or update.')
     for row,label,var in [(2,'A.C.E. USB folder',package),(3,'Computer backup folder',backup),(5,'Synced CIC inbox',inbox)]:
         ttk.Label(frame,text=label).grid(row=row,column=0,sticky='w',padx=(0,10),pady=7)
         ttk.Entry(frame,textvariable=var).grid(row=row,column=1,sticky='ew',pady=7)
         ttk.Button(frame,text='Browse',command=lambda v=var:v.set(filedialog.askdirectory(parent=window) or v.get())).grid(row=row,column=2,padx=(8,0))
     ttk.Checkbutton(frame,text='Receive Microsoft CIC cards on this computer',variable=cic).grid(row=4,column=0,columnspan=3,sticky='w',pady=(12,2))
-    ttk.Label(frame,textvariable=status,wraplength=690,justify='left').grid(row=6,column=0,columnspan=3,sticky='w',pady=16)
+    ttk.Checkbutton(frame,text='Check GitHub for newer CIC versions using this computer’s existing sign-in',variable=online).grid(row=6,column=0,columnspan=3,sticky='w',pady=6)
+    ttk.Label(frame,textvariable=status,wraplength=730,justify='left').grid(row=7,column=0,columnspan=3,sticky='w',pady=16)
     result={}
     def check():
         try:
@@ -198,15 +324,31 @@ def build_window(root, executable=None):
         except Exception as error:messagebox.showerror('USB needs attention',str(error),parent=window)
     def setup():
         try:
-            result.update(configure_computer(package.get(),backup.get(),cic_enabled=cic.get(),inbox_folder=inbox.get(),launcher_source=executable))
-            status.set('Setup complete. Use ACE USB on your desktop. A verified database backup was saved.');open_button.configure(state='normal')
+            status.set('Installing or updating A.C.E. Please keep the USB connected until setup finishes.');window.update_idletasks()
+            result.update(configure_computer(package.get(),backup.get(),cic_enabled=cic.get(),inbox_folder=inbox.get(),online_updates=online.get(),launcher_source=executable))
+            status.set('Ready. Use ACE Inventory on your desktop. You can remove the USB. Installed version: '+result['update']['version']);open_button.configure(state='normal')
         except Exception as error:messagebox.showerror('Setup needs attention',str(error),parent=window)
     def open_app():
         try:launch_registered(result['package_id']);window.destroy()
         except Exception as error:messagebox.showerror('Cannot open A.C.E.',str(error),parent=window)
-    buttons=ttk.Frame(frame);buttons.grid(row=7,column=0,columnspan=3,sticky='e')
+    def cleanup():
+        from .installation import cleanup_versions
+        from .single_instance import SingleInstanceGuard
+        try:
+            marker=read_marker(package.get())
+            if not marker:raise ValueError('Choose a configured A.C.E. package first.')
+            registration=registry_data()['packages'].get(marker['package_id'],{})
+            targets=[Path(package.get())]
+            if registration.get('mode')=='installed':targets.append(Path(registration['install_root']))
+            with SingleInstanceGuard.acquire(r'Local\TeamShapes.ACE.InventorySystem') as guard:
+                if not guard.is_primary:raise ValueError('Close A.C.E. before cleaning up program versions.')
+                removed=sum(len(cleanup_versions(target)['removed']) for target in targets)
+            status.set(f'Cleanup complete. Removed {removed} older program backup(s); one previous version is retained per installation.')
+        except Exception as error:messagebox.showerror('Cleanup needs attention',str(error),parent=window)
+    buttons=ttk.Frame(frame);buttons.grid(row=8,column=0,columnspan=3,sticky='e')
     ttk.Button(buttons,text='Check USB',command=check).pack(side='left',padx=4)
-    ttk.Button(buttons,text='Set Up This Computer',command=setup).pack(side='left',padx=4)
+    ttk.Button(buttons,text='Install / Update',command=setup).pack(side='left',padx=4)
+    ttk.Button(buttons,text='Clean Up Old Versions',command=cleanup).pack(side='left',padx=4)
     open_button=ttk.Button(buttons,text='Open A.C.E.',state='disabled',command=open_app);open_button.pack(side='left',padx=4)
     return window
 

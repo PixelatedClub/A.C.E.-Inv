@@ -10,6 +10,7 @@ import tempfile
 import uuid
 
 MARKER = 'ace_usb.json'
+INSTALL_MARKER = 'ace_install.json'
 SCHEMA = 'ace.usb.v1'
 DB_REL = 'portable_data/inventory.db'
 
@@ -36,8 +37,10 @@ def read_json(path, default=None):
 def read_marker(root):
     root=Path(root)
     data=read_json(root/MARKER)
+    if data is not None and (root/INSTALL_MARKER).exists():raise ValueError('The package has conflicting installation identities.')
+    if data is None:data=read_json(root/INSTALL_MARKER)
     if data is None:return None
-    if data.get('schema')!=SCHEMA or data.get('database')!=DB_REL or data.get('executable')!='A.C.E.exe':
+    if data.get('schema') not in (SCHEMA,'ace.install.v1') or data.get('database')!=DB_REL or data.get('executable')!='A.C.E.exe':
         raise ValueError('This USB has an unsupported A.C.E. package marker.')
     try:uuid.UUID(data.get('package_id',''))
     except (ValueError,AttributeError,TypeError):raise ValueError('The A.C.E. USB identity is invalid.') from None
@@ -48,11 +51,14 @@ def new_marker():
     return dict(schema=SCHEMA,package_id=str(uuid.uuid4()),database=DB_REL,executable='A.C.E.exe')
 
 
+def has_marker(root):return (Path(root)/MARKER).exists() or (Path(root)/INSTALL_MARKER).exists()
+
+
 def package_database(root):
     root=Path(root).resolve()
     path=(root/DB_REL).resolve()
     if not path.is_relative_to(root) or not path.is_file():
-        raise ValueError('The USB inventory database is missing. Reconnect the correct drive or restore its backup. No empty inventory was created.')
+        raise ValueError('The inventory database is missing. Restore its verified backup. No empty inventory was created.')
     return path
 
 

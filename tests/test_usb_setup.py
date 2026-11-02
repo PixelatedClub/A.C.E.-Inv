@@ -79,8 +79,9 @@ class UsbSetupTests(unittest.TestCase):
     def test_setup_creates_verified_backup_and_no_inventory_edits(self):
         source=self.base/'Set Up A.C.E.exe';source.write_bytes(b'fixture-setup')
         before=(self.data/'inventory.db').read_bytes()
-        with patch('inventory_app.usb_setup.validate_backup_location'),patch('inventory_app.usb_setup.volume_serial',return_value='TEST'),patch('inventory_app.usb_setup.create_shortcut',return_value=self.base/'ACE USB.lnk') as shortcut:
-            result=configure_computer(self.root,self.base/'backup',launcher_source=source,
+        from inventory_app.single_instance import SingleInstanceGuard
+        with patch('inventory_app.single_instance.SingleInstanceGuard.acquire',return_value=SingleInstanceGuard(None,is_primary=True)),patch('inventory_app.usb_setup.validate_backup_location'),patch('inventory_app.usb_setup.volume_serial',return_value='TEST'),patch('inventory_app.usb_setup.create_shortcut',return_value=self.base/'ACE USB.lnk') as shortcut:
+            result=configure_computer(self.root,self.base/'backup',install_locally=False,launcher_source=source,
                 registry_path=self.registry,launcher_path=self.base/'installed/launcher.exe',device_path=self.device,desktop=self.base)
         self.assertEqual(before,(self.data/'inventory.db').read_bytes());shortcut.assert_called_once()
         with zipfile.ZipFile(result['backup']) as archive:
