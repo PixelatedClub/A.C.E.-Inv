@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .completion_sound import show_error
+
 import bisect
 import ctypes
 import random
@@ -1656,6 +1658,14 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         ttk.Button(audio_controls, text='Preview Sound',
                    command=lambda: play(preview=True)).pack(side='left', padx=(12, 0))
 
+        self.error_sound_var = tk.BooleanVar(self, value=enabled('error'))
+        error_controls = ttk.Frame(frame)
+        error_controls.grid(row=8, column=0, columnspan=3, sticky='w', pady=(6, 0))
+        ttk.Checkbutton(error_controls, text='Error sound', variable=self.error_sound_var,
+                        command=self._save_error_sound).pack(side='left')
+        ttk.Button(error_controls, text='Preview Error Sound',
+                   command=lambda: play(preview=True, kind='error')).pack(side='left', padx=(12, 0))
+
         security_frame = ttk.LabelFrame(self.settings_tab, text="Admin Security", padding=12)
         security_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         security_frame.columnconfigure(1, weight=1)
@@ -2038,10 +2048,10 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
                     saved_item_no = self.service.add_wings_catalog_item(item_no=item_no_var.get(), **fields)
                 self.service.ensure_catalog_inventory(item_nos=[saved_item_no])
             except InventoryError as exc:
-                messagebox.showerror("WINGS Item Error", str(exc), parent=window)
+                show_error("WINGS Item Error", str(exc), parent=window)
                 return
             except Exception as exc:  # pragma: no cover - defensive GUI handling
-                messagebox.showerror("WINGS Item Error", f"Unexpected error: {exc}", parent=window)
+                show_error("WINGS Item Error", f"Unexpected error: {exc}", parent=window)
                 return
             window.destroy()
             self.refresh_all_views()
@@ -3179,7 +3189,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
 
     def _use_usb_backup_from_prompt(self, dialog: tk.Toplevel, selected_root: str) -> None:
         if not selected_root or selected_root.startswith("No removable"):
-            messagebox.showerror("USB Drive Not Found", "Connect a USB drive or choose another folder.", parent=dialog)
+            show_error("USB Drive Not Found", "Connect a USB drive or choose another folder.", parent=dialog)
             return
         target_dir = Path(selected_root) / "A.C.E. Backups"
         if self._activate_protected_backup_location(target_dir, parent=dialog):
@@ -3219,7 +3229,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         try:
             target_dir = directory.expanduser().resolve()
         except OSError as exc:
-            messagebox.showerror("Invalid Backup Folder", str(exc), parent=parent)
+            show_error("Invalid Backup Folder", str(exc), parent=parent)
             return False
 
         live_drive = self.settings.database_path.anchor.casefold()
@@ -3246,7 +3256,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
                 validation_file.unlink(missing_ok=True)
             except OSError:
                 pass
-            messagebox.showerror(
+            show_error(
                 "Backup Folder Unavailable",
                 f"A.C.E. could not write to this folder:\n{target_dir}\n\n{exc}",
                 parent=parent,
@@ -3261,7 +3271,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         if status["last_error"] or not status["last_copy_path"]:
             self.settings.protected_backup_path = previous_path
             save_settings(self.settings)
-            messagebox.showerror(
+            show_error(
                 "Protected Backup Failed",
                 status["last_error"] or "A.C.E. could not verify the protected backup copy.",
                 parent=parent,
@@ -3307,7 +3317,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             try:
                 admin_record = self.service.authenticate_admin_code(code)
             except InventoryError as exc:
-                messagebox.showerror("Invalid Admin Code", str(exc), parent=self._dialog_parent())
+                show_error("Invalid Admin Code", str(exc), parent=self._dialog_parent())
                 continue
             self._apply_window_icon_from_code(code)
             self._set_current_admin(admin_record)
@@ -5570,7 +5580,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
     def _toggle_alternate_icons(self, parent: tk.Misc) -> None:
         enabled = not self.alternate_icons_enabled
         if not save_alternate_icons_enabled(enabled):
-            messagebox.showerror(
+            show_error(
                 "Alternate Icons",
                 "A.C.E. could not save the alternate-icon setting on this device.",
                 parent=parent,
@@ -5905,7 +5915,7 @@ A.C.E. Manual
 
     def _show_error(self, message: str) -> None:
         self._set_status(f"Error: {message}")
-        messagebox.showerror("Inventory Error", message, parent=self._dialog_parent())
+        show_error("Inventory Error", message, parent=self._dialog_parent())
 
     def _show_info(self, message: str) -> None:
         self._set_status(message)
@@ -5917,6 +5927,12 @@ A.C.E. Manual
         if not save_enabled(self.completion_sound_var.get()):
             self.completion_sound_var.set(enabled())
             self._show_error('A.C.E. could not save the sound setting on this computer.')
+
+    def _save_error_sound(self) -> None:
+        from .completion_sound import save_enabled, enabled
+        if not save_enabled(self.error_sound_var.get(), 'error'):
+            self.error_sound_var.set(enabled('error'))
+            self._show_error('A.C.E. could not save the error sound setting on this computer.')
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)

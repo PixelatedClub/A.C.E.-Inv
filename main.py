@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import os
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
 
 
 from inventory_app import InventoryApp, load_settings
+from inventory_app.completion_sound import show_error
 from inventory_app.config import APP_TITLE, BASE_DIR
 from inventory_app.usb_portable import has_marker, read_marker
 from inventory_app.single_instance import SingleInstanceGuard
@@ -22,9 +24,8 @@ SINGLE_INSTANCE_MUTEX = r"Local\TeamShapes.ACE.InventorySystem"
 
 def startup_error(message):
     import tkinter as tk
-    from tkinter import messagebox
     root=tk.Tk();root.withdraw()
-    try:messagebox.showerror('A.C.E. could not open inventory',message,parent=root)
+    try:show_error('A.C.E. could not open inventory',message,parent=root)
     finally:root.destroy()
 
 

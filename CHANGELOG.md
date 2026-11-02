@@ -1,5 +1,10 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.8 - Custom error sound - 2026-11-02
+
+- Add a distinct descending error chime, with separate mute and preview controls in Settings.
+- Use A.C.E. error dialogs in the app and installer instead of Windows error message boxes, retaining acknowledgment and restoring the previous dialog focus.
+
 ## 1.9.0-cic.7 - Completion chime - 2026-11-02
 
 - Add an original, locally generated three-note completion chime and per-computer mute/preview controls in Settings.

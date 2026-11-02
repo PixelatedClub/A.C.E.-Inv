@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 9, 0, 9),
-    prodvers=(1, 9, 0, 9),
+    filevers=(1, 9, 0, 10),
+    prodvers=(1, 9, 0, 10),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Team Shapes'),
           StringStruct('FileDescription', 'A.C.E. USB Setup'),
-          StringStruct('FileVersion', '1.9.0.9'),
+          StringStruct('FileVersion', '1.9.0.10'),
           StringStruct('InternalName', 'ACE USB Setup'),
           StringStruct('LegalCopyright', 'Copyright (c) 2026 Team Shapes'),
           StringStruct('OriginalFilename', 'Set Up A.C.E.exe'),
           StringStruct('ProductName', 'A.C.E. USB Setup'),
-          StringStruct('ProductVersion', '1.9.0-cic.7'),
+          StringStruct('ProductVersion', '1.9.0-cic.8'),
           StringStruct('Comments', 'Developed and published under the Team Shapes brand.')
         ]
       )

@@ -1,4 +1,4 @@
-"""Original A.C.E. completion chime, synthesized locally with the standard library."""
+"""Original A.C.E. feedback sounds, synthesized locally with the standard library."""
 from array import array
 from functools import lru_cache
 import io
@@ -9,22 +9,26 @@ import wave
 from .config import DEVICE_SETTINGS_DIR, load_device_settings, _save_device_settings
 
 
-def enabled() -> bool:
-    return bool(load_device_settings().get('completion_sound_enabled', True))
+def enabled(kind: str = 'completion') -> bool:
+    return bool(load_device_settings().get(kind + '_sound_enabled', True))
 
 
-def save_enabled(value: bool) -> bool:
+def save_enabled(value: bool, kind: str = 'completion') -> bool:
     settings = load_device_settings()
-    settings['completion_sound_enabled'] = bool(value)
+    settings[kind + '_sound_enabled'] = bool(value)
     return _save_device_settings(settings)
 
 
-@lru_cache(maxsize=1)
-def chime_bytes() -> bytes:
+@lru_cache(maxsize=2)
+def chime_bytes(kind: str = 'completion') -> bytes:
     rate = 44100
     samples = array('h')
     notes = ((0.00, 659.255), (0.085, 830.609), (0.17, 987.767))
-    for index in range(int(rate * 0.52)):
+    duration = 0.52
+    if kind == 'error':
+        notes = ((0.00, 440.0), (0.12, 329.628))
+        duration = 0.46
+    for index in range(int(rate * duration)):
         time = index / rate
         value = 0.0
         for start, frequency in notes:
@@ -49,22 +53,26 @@ def chime_bytes() -> bytes:
     return output.getvalue()
 
 
-def play(*, preview: bool = False) -> None:
+def play(*, preview: bool = False, kind: str = 'completion') -> None:
     """Never block an inventory action or fall back to a Windows system sound."""
     try:
-        if not preview and not enabled():
+        if kind not in ('completion', 'error'):
+            return
+        if not preview and not enabled(kind):
             return
         import winsound
         folder = DEVICE_SETTINGS_DIR / 'sounds'
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / 'ace_complete_v1.wav'
-        audio = chime_bytes()
+        path = folder / ('ace_error_v1.wav' if kind == 'error' else 'ace_complete_v1.wav')
+        audio = chime_bytes(kind)
         if not path.exists() or path.read_bytes() != audio:
             temporary = path.with_suffix('.tmp')
             temporary.write_bytes(audio)
             temporary.replace(path)
-        winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC |
-                           winsound.SND_NODEFAULT | winsound.SND_NOSTOP)
+        flags = winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT
+        if kind == 'completion':
+            flags |= winsound.SND_NOSTOP
+        winsound.PlaySound(str(path), flags)
     except (ImportError, OSError, RuntimeError, ValueError):
         pass
 
@@ -96,3 +104,50 @@ def show_completion(app, message: str) -> None:
         y = app.winfo_rooty() + max(0, (app.winfo_height() - window.winfo_reqheight()) // 2)
         window.geometry(f'+{x}+{y}')
     play()
+
+
+def show_error(title: str, message: str, *, parent=None) -> str:
+    """Acknowledge errors without the Windows message-box sound; preserve dialog grabs."""
+    import tkinter as tk
+    from tkinter import ttk
+    owner = parent or tk._default_root
+    temporary_owner = owner is None
+    if temporary_owner:
+        owner = tk.Tk()
+        owner.withdraw()
+    previous_grab = owner.grab_current()
+    previous_focus = owner.focus_get()
+    window = tk.Toplevel(owner)
+    window.title(title)
+    window.resizable(False, False)
+    if owner.winfo_viewable():
+        window.transient(owner)
+    frame = ttk.Frame(window, padding=22)
+    frame.pack(fill='both', expand=True)
+    ttk.Label(frame, text='Action needs attention', font=('Segoe UI', 13, 'bold'),
+              foreground='#a12626').pack(anchor='w', pady=(0, 10))
+    ttk.Label(frame, text=message, wraplength=520, justify='left').pack(anchor='w', pady=(0, 18))
+    button = ttk.Button(frame, text='OK', command=window.destroy)
+    button.pack(anchor='e')
+    window.bind('<Escape>', lambda _event: window.destroy())
+    window.bind('<Return>', lambda _event: window.destroy())
+    try:
+        window.wait_visibility()
+        window.grab_set()
+        button.focus_set()
+        play(kind='error')
+        window.wait_window()
+    finally:
+        if window.winfo_exists():
+            window.destroy()
+        if temporary_owner:
+            owner.destroy()
+        else:
+            try:
+                if previous_grab is not None and previous_grab.winfo_exists():
+                    previous_grab.grab_set()
+                if previous_focus is not None and previous_focus.winfo_exists():
+                    previous_focus.focus_set()
+            except tk.TclError:
+                pass
+    return 'ok'

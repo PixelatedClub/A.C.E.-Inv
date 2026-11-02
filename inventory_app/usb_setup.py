@@ -1,4 +1,5 @@
 """Install locally from a USB and launch with optional verified program updates."""
+from .completion_sound import show_error
 from contextlib import closing
 from datetime import datetime
 import base64
@@ -321,16 +322,16 @@ def build_window(root, executable=None):
         try:
             health=validate_package(package.get(),require_marker=False)
             status.set(f"Inventory health passed. USB free space: {health['free_bytes']//(1024*1024)} MB.")
-        except Exception as error:messagebox.showerror('USB needs attention',str(error),parent=window)
+        except Exception as error:show_error('USB needs attention',str(error),parent=window)
     def setup():
         try:
             status.set('Installing or updating A.C.E. Please keep the USB connected until setup finishes.');window.update_idletasks()
             result.update(configure_computer(package.get(),backup.get(),cic_enabled=cic.get(),inbox_folder=inbox.get(),online_updates=online.get(),launcher_source=executable))
             status.set('Ready. Use ACE Inventory on your desktop. You can remove the USB. Installed version: '+result['update']['version']);open_button.configure(state='normal')
-        except Exception as error:messagebox.showerror('Setup needs attention',str(error),parent=window)
+        except Exception as error:show_error('Setup needs attention',str(error),parent=window)
     def open_app():
         try:launch_registered(result['package_id']);window.destroy()
-        except Exception as error:messagebox.showerror('Cannot open A.C.E.',str(error),parent=window)
+        except Exception as error:show_error('Cannot open A.C.E.',str(error),parent=window)
     def cleanup():
         from .installation import cleanup_versions
         from .single_instance import SingleInstanceGuard
@@ -344,7 +345,7 @@ def build_window(root, executable=None):
                 if not guard.is_primary:raise ValueError('Close A.C.E. before cleaning up program versions.')
                 removed=sum(len(cleanup_versions(target)['removed']) for target in targets)
             status.set(f'Cleanup complete. Removed {removed} older program backup(s); one previous version is retained per installation.')
-        except Exception as error:messagebox.showerror('Cleanup needs attention',str(error),parent=window)
+        except Exception as error:show_error('Cleanup needs attention',str(error),parent=window)
     buttons=ttk.Frame(frame);buttons.grid(row=8,column=0,columnspan=3,sticky='e')
     ttk.Button(buttons,text='Check USB',command=check).pack(side='left',padx=4)
     ttk.Button(buttons,text='Install / Update',command=setup).pack(side='left',padx=4)
@@ -370,7 +371,7 @@ def main():
             import tkinter as tk
             from tkinter import messagebox
             window=tk.Tk();window.withdraw()
-            try:messagebox.showerror('A.C.E. USB',str(error),parent=window)
+            try:show_error('A.C.E. USB',str(error),parent=window)
             finally:window.destroy()
         return
     root=Path(sys.executable).parent if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[1]

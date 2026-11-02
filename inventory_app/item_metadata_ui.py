@@ -1,4 +1,5 @@
 """Tag chips, family/season selectors, and an embedded PNG image viewer."""
+from .completion_sound import show_error
 import base64
 import math
 from pathlib import Path
@@ -42,7 +43,7 @@ def edit_metadata(app):
             proposed=normalize_tags(list(tags)+entry_var.get().split(','))
             if any(len(t)>60 for t in proposed): raise ValueError('Tags must be 60 characters or fewer.')
             tags.clear(); tags.update(proposed); entry_var.set(''); redraw()
-        except ValueError as exc: messagebox.showerror('Tags',str(exc),parent=window)
+        except ValueError as exc: show_error('Tags',str(exc),parent=window)
         return 'break'
     entry.bind('<KeyRelease>',suggest); entry.bind('<Return>',add)
     ttk.Button(frame,text='Add tag (or type comma-separated tags)',command=add).pack(anchor='w')
@@ -72,7 +73,7 @@ def edit_metadata(app):
             encoded=base64.b64encode(data).decode('ascii')
             tk.PhotoImage(master=window,data=encoded) # Decode before accepting.
             image_value[0]=encoded; image_changed[0]=True; render()
-        except (ValueError,OSError,tk.TclError) as exc: messagebox.showerror('Image',str(exc),parent=window)
+        except (ValueError,OSError,tk.TclError) as exc: show_error('Image',str(exc),parent=window)
     def clear_image(): image_value[0]=''; image_changed[0]=True; render()
     render()
     buttons=ttk.Frame(frame); buttons.pack(fill='x')
@@ -83,7 +84,7 @@ def edit_metadata(app):
             pending=normalize_tags(list(tags)+entry_var.get().split(','))
             save_metadata(app.service,barcode,pending,'' if family.get()=='Automatic' else family.get(),season.get(),
                           image_value[0] if image_changed[0] else None)
-        except (ValueError,OSError) as exc: messagebox.showerror('Item metadata',str(exc),parent=window); return
+        except (ValueError,OSError) as exc: show_error('Item metadata',str(exc),parent=window); return
         window.destroy(); app.refresh_items_tree()
     ttk.Button(buttons,text='Save',command=save).pack(side='right')
     ttk.Button(buttons,text='Cancel',command=window.destroy).pack(side='right')

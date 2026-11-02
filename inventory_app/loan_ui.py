@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from .completion_sound import show_error
 import tkinter as tk
 from tkinter import ttk, messagebox
 from .barcode_utils import extract_scanned_barcode, open_file
@@ -151,7 +152,7 @@ class LoanUiMixin:
                 queue[barcode]={'barcode_id':barcode,'quantity':total,'name':item['item_name']+' '+item['variant']}
                 redraw();selected.set('');quantity.set('1');item_combo.focus_set()
             except (ValueError,TypeError) as exc:
-                messagebox.showerror('Loan item',str(exc),parent=window)
+                show_error('Loan item',str(exc),parent=window)
         def remove():
             if listbox.curselection():
                 del queue[list(queue)[listbox.curselection()[0]]];redraw()
@@ -162,7 +163,7 @@ class LoanUiMixin:
         def issue():
             identity=cadet_map.get(cadet.get())
             if not identity:
-                messagebox.showerror('Select cadet','Select an existing cadet. Add new cadets in the Cadets tab first.',parent=window);return
+                show_error('Select cadet','Select an existing cadet. Add new cadets in the Cadets tab first.',parent=window);return
             def saved(result):
                 window.destroy();self.refresh_all_views()
             self._run_action(lambda:self.service.checkout_items_bulk(line_items=list(queue.values()),cadet_name=identity['full_name'],cadet_email=identity['email'],approved_by=self.current_admin,loan_due_date=due.get(),loan_purpose=purpose.get()),success_message='Loan issued with a return deadline.',on_success=saved)
