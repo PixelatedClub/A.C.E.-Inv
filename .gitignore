@@ -23,6 +23,7 @@ dist/
 *.spec
 build_release/
 build_release_*/
+build_usb_setup/
 smoke_test_*/
 
 # Local release files - upload these through GitHub Releases
@@ -50,3 +51,5 @@ checkout_drafts.json
 checkout_drafts.json.tmp
 portable_data/cic_microsoft_profile.json
 cic_microsoft_profile.json
+ace_usb.json
+usb_registry.json

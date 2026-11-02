@@ -31,8 +31,9 @@ class MicrosoftCicUiMixin:
         self.after(1000, self._poll_microsoft_cic)
 
     def _activate_microsoft(self, settings):
-        if settings.get('database_path') and settings['database_path'] != str(self.service.settings.database_path):
-            raise ValueError('This intake belongs to another database. Reconfigure it for the current inventory.')
+        from .usb_portable import rebase_intake
+        database=self.service.settings.database_path
+        settings=rebase_intake(settings,database.parent.parent,database)
         profile = load_profile(settings['profile_path'])
         folder = Path(settings['inbox_path'])
         if not folder.is_dir():
@@ -65,6 +66,9 @@ class MicrosoftCicUiMixin:
             data = {'enabled': enabled.get(), 'profile_path': profile.get(), 'inbox_path': inbox.get(),
                     'database_path': str(self.service.settings.database_path),
                     'secret': settings.get('secret') or secrets.token_urlsafe(32)}
+            from .usb_portable import read_marker
+            marker=read_marker(self.service.settings.database_path.parent.parent)
+            if marker:data['package_id']=marker['package_id']
             try:
                 if enabled.get():
                     self._activate_microsoft(data)

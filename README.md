@@ -1,12 +1,14 @@
 # A.C.E. Inventory System
 
-**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.4).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
+**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.5).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
 
 A.C.E. is a portable AFROTC clothing and equipment inventory system built for simple cadet use. It supports WINGS-ready imports and exports, searchable equipment records, compact barcode labels, scanner-based checkout and return, cadet history, reports, backups, and flash-drive deployment on Windows.
 
+Optional **Set Up A.C.E.exe** on the USB creates a desktop launcher that finds the correct USB even when its drive letter changes, checks inventory health and configures this computer’s backups and CIC inbox. [USB setup](docs/USB_SETUP.md).
+
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.9.0-cic.4 (October 26, 2026)**
+**Current source version: 1.9.0-cic.5 (October 26, 2026)**
 
 Search Items, Index and Barcode Generator using ordinary terms such as `OCP pants medium regular` or `cover 7.5`. Case, size abbreviations, equivalent fractions/decimals and common item names are normalized across fields and linked catalog information. Tags are optional search aids. Summer/all-weather alternatives remain separate; searching never changes item records.
 

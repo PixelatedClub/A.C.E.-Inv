@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.5 - USB setup and launcher - 2026-11-02
+
+- Add an optional per-computer USB setup utility with a verified database backup, desktop shortcut and computer-specific CIC intake configuration.
+- Find the registered USB by package and volume identity across drive-letter changes. Block missing, corrupt, mismatched or duplicate packages without opening another inventory.
+- Guard marked USB packages against creating an empty replacement database. Preserve existing laptop files and unrelated shortcuts.
+
 ## 1.9.0-cic.4 - Shared uniform search - 2026-10-27
 
 - Search across item names, sizes, types and linked WINGS information using the CIC vocabulary. Tags are supplementary, and barcodes/aliases still resolve. Display clearer item context and distinguish local catalog choices from WINGS entries.

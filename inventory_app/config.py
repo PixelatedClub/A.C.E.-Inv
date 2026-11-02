@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 APP_TITLE = "A.C.E."
-APP_VERSION = "1.9.0-cic.4"
+APP_VERSION = "1.9.0-cic.5"
 PRODUCT_NAME = "A.C.E. Inventory System"
 PUBLISHER_BRAND = "Team Shapes"
 if getattr(sys, "frozen", False):
@@ -82,6 +82,9 @@ def bootstrap_bundled_files() -> None:
 
 
 def load_settings() -> AppSettings:
+    from .usb_portable import MARKER, validate_package
+    if (BASE_DIR / MARKER).exists():
+        validate_package(BASE_DIR)
     bootstrap_bundled_files()
     if not CONFIG_PATH.exists():
         device_settings = load_device_settings()
@@ -111,6 +114,9 @@ def load_settings() -> AppSettings:
 
 
 def save_settings(settings: AppSettings) -> None:
+    from .usb_portable import MARKER, package_database
+    if (BASE_DIR / MARKER).exists() and settings.database_path != package_database(BASE_DIR):
+        raise ValueError('This USB uses its own inventory database. Open another A.C.E. package to use a different inventory.')
     ensure_app_directories(settings)
     portable_settings = asdict(settings)
     # The protected folder belongs to a specific Windows device. Keeping it
