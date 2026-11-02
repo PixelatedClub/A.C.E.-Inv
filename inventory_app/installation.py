@@ -35,7 +35,7 @@ def version_key(version):
 def make_release(version,exe):
     version_key(version)
     return dict(schema='ace.release.v1',channel=CHANNEL,version=version,executable='A.C.E.exe',
-                size=Path(exe).stat().st_size,sha256=digest(exe),minimum_setup='1.9.0-cic.6')
+                size=Path(exe).stat().st_size,sha256=digest(exe),minimum_setup='1.9.0-cic.13')
 
 
 def release(root, *, verify=True):

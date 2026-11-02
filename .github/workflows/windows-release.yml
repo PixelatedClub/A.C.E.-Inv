@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag, for example v1.9.0-cic.12
+        description: Release tag, for example v1.9.0-cic.13
         required: true
-        default: v1.9.0-cic.12
+        default: v1.9.0-cic.13
       prerelease:
         description: Mark as a beta/prerelease (does not replace the latest stable download)
         type: boolean

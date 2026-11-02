@@ -1,6 +1,6 @@
 # A.C.E. Inventory System
 
-**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.12).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
+**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.13).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
 
 A.C.E. is a portable AFROTC clothing and equipment inventory system built for simple cadet use. It supports WINGS-ready imports and exports, searchable equipment records, compact barcode labels, scanner-based checkout and return, cadet history, reports, backups, and flash-drive deployment on Windows.
 
@@ -8,7 +8,9 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.9.0-cic.12 (November 2, 2026)**
+**Current source version: 1.9.0-cic.13 (November 2, 2026)**
+
+Use **Settings > Update USB Copy** to refresh the registered flash drive with this computer's current inventory, checkout/return drafts, CIC profile, labels, exports and program. The destination and record counts appear before confirmation. A compact computer recovery archive preserves both inventories before replacement; the newest ten such archives are retained. This is an explicit computer-to-USB snapshot, not a merge between computers. Interrupted refreshes block USB installation until retried.
 
 **Returns > Return Items** supports independent cadet return tabs. Use **+ New Cadet Return** to prepare another cadet in the background; selections and notes are saved in `return_drafts.json` and restored after restart. Completing a return refreshes all tabs and removes closed transactions from their selections. **Temporary Loans > Return Selected to Inventory** returns only the selected open loan units for one cadet after confirmation and records the return through the existing history/report workflow.
 

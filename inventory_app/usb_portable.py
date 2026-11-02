@@ -62,10 +62,12 @@ def package_database(root):
     return path
 
 
-def validate_package(root, *, require_marker=True, check_database=True):
+def validate_package(root, *, require_marker=True, check_database=True, allow_pending_transfer=False):
     raw=Path(root)
     if raw.is_symlink():raise ValueError('Choose the actual A.C.E. USB folder.')
     root=raw.resolve();marker=read_marker(root)
+    if (root/'ace_usb_transfer_pending.json').exists() and not allow_pending_transfer:
+        raise ValueError('This USB refresh did not finish. Reconnect it to the original computer and run Settings > Update USB Copy again before installing from it.')
     if require_marker and marker is None:raise ValueError('This folder has not been set up as an A.C.E. USB.')
     if not (root/'A.C.E.exe').is_file():raise ValueError('A.C.E.exe is missing from the USB folder.')
     config=read_json(root/'app_settings.json')

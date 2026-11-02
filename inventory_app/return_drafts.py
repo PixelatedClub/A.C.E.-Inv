@@ -134,8 +134,12 @@ class ReturnDraftMixin:
             data.update(cadet_id=context['selected_return_cadet_id'],notes=self._get_text(context['return_notes_text']),selected=[int(tree.set(i,'transaction_id')) for i in tree.selection()])
             drafts.append(data)
         from .usb_portable import atomic_json
-        try:atomic_json(self._return_drafts_path,dict(version=1,drafts=drafts))
-        except OSError as error:self._set_status(f'Return drafts could not be saved: {error}')
+        try:
+            atomic_json(self._return_drafts_path,dict(version=1,drafts=drafts))
+            return True
+        except OSError as error:
+            self._set_status(f'Return drafts could not be saved: {error}')
+            return False
 
     def _close_return_draft(self):
         key=self.return_draft_notebook.select();context=self.return_drafts.get(key)

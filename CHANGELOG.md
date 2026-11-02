@@ -1,5 +1,11 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.13 - Update USB Copy - 2026-11-02
+
+- Add an explicit Settings action to copy the current computer inventory, saved drafts and supporting files to its registered USB, with destination/count confirmation and no reverse merge.
+- Prepare a consistent SQLite snapshot, back up both inventories in a compact computer archive, flush and verify transferred files, and keep inventory replacement atomic.
+- Retain ten managed transfer recovery archives and one previous program version. Block installation from an interrupted USB refresh until it is retried.
+
 ## 1.9.0-cic.12 - Multiple cadet returns - 2026-11-02
 
 - Add independent return tabs with cadet identity, selected transaction rows, scan inputs and notes preserved across switches and restarts. Reuse available tab numbers and keep return actions visible.

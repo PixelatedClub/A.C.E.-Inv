@@ -61,3 +61,5 @@ usb_registry.json
 return_drafts.json
 return_drafts.json.tmp
 return_drafts.json.*.tmp
+
+ace_usb_transfer_pending.json

@@ -122,8 +122,10 @@ class CheckoutDraftMixin:
         try:
             temporary.write_text(json.dumps({'version':1,'drafts':drafts},indent=2),encoding='utf-8')
             temporary.replace(path)
+            return True
         except OSError as exc:
             self._set_status(f'Checkout drafts could not be saved: {exc}')
+            return False
 
     def _close_checkout_draft(self):
         key=self.checkout_notebook.select();context=self.checkout_drafts.get(key)

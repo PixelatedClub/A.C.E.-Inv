@@ -93,3 +93,21 @@ class PersonalLayoutTests(unittest.TestCase):
             self.assertEqual(save.call_count,1)
             window.destroy();a.update();self.assertEqual(a.cget('background'),expected)
             self.login(3);self.assertEqual(a.cget('background'),'#edf3ed')
+
+    def test_update_usb_copy_button_requires_confirmation_and_uses_registered_target(self):
+        from unittest.mock import Mock
+        from inventory_app.appearance import widgets
+        self.login(3);a=self.app
+        target=Path(self.temp.name)/'USB';backup=Path(self.temp.name)/'backups';identity_value='fixture-package'
+        registration=dict(package_id=identity_value)
+        plan=dict(target=target,backup=backup,computer=dict(items=5,cadets=2,transactions=3),usb=dict(items=4,cadets=1,transactions=1))
+        result=dict(target=str(target),backup=str(backup/'backup.zip'),counts=plan['computer'])
+        button=next(w for w in widgets(a.settings_tab) if w.winfo_class()=='TButton' and w.cget('text')=='Update USB Copy...')
+        with patch('inventory_app.usb_portable.read_marker',return_value={'package_id':identity_value}),patch('inventory_app.usb_setup.registry_data',return_value={'packages':{identity_value:registration}}),patch('inventory_app.usb_transfer.transfer_plan',return_value=plan),patch('inventory_app.usb_transfer.export_to_usb',return_value=result) as export,patch('inventory_app.ui.messagebox.askyesno',return_value=False) as confirm,patch.object(a,'_show_info') as info:
+            button.invoke();export.assert_not_called();info.assert_not_called()
+            confirm.return_value=True;button.invoke();export.assert_called_once();info.assert_called_once()
+            self.assertEqual(export.call_args.kwargs['target'],target)
+
+            export.reset_mock();confirm.reset_mock();info.reset_mock()
+            with patch.object(a,'_save_checkout_drafts',return_value=True),patch.object(a,'_save_return_drafts',return_value=False),patch.object(a,'_show_error') as error:
+                button.invoke();error.assert_called_once();confirm.assert_not_called();export.assert_not_called()

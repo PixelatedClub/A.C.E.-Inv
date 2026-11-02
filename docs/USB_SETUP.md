@@ -23,3 +23,11 @@ Updates archive the outgoing program in `program_backups`. Cleanup keeps the new
 `ace_usb.json` identifies the USB package; `ace_install.json` identifies its installed copy. Both retain the same package ID. Registrations use the USB's volume identity to find program updates even after its drive letter changes. The installed copy launches without the USB. This CIC build directs marked USB applications to setup rather than running from the USB.
 
 The installer uses the current Windows account, preserves unrelated shortcuts, and replaces only its own ACE USB shortcut with ACE Inventory. It changes no firewall, network or antivirus settings. Backups must be outside the USB and managed installation. No Teams files are moved or deleted by installation. Setup recovery settings remain within the installed package.
+
+## Put the latest inventory back on the flash drive
+
+After working on the installed desktop copy, connect the registered A.C.E. USB and select **Settings > Update USB Copy**. Review the destination and record counts, then confirm. Wait for the verified completion message and safely eject the drive. A.C.E. can remain open during this snapshot; draft inputs are saved before export.
+
+This action replaces the USB inventory snapshot with this computer's current saved inventory. It copies checkout/return drafts, the CIC profile, labels, exports and supporting assets, and updates the USB program when this computer's program is current or newer. It does not copy device settings or GitHub credentials. It never merges other-computer changes back into the working database.
+
+One compact recovery archive on the computer contains both the source snapshot and previous USB inventory, plus saved drafts and application settings. The newest ten A.C.E.-managed transfer archives for this package are retained. Program rollback archives remain separate. If interrupted, USB setup refuses to seed a new computer until **Update USB Copy** is retried on the original computer.

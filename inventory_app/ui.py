@@ -1663,6 +1663,11 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcod
             row=0, column=3, sticky="ew", padx=(4, 0)
         )
 
+        ttk.Button(buttons, text='Update USB Copy...', command=self._update_usb_copy).grid(
+            row=1, column=0, columnspan=2, sticky='ew', padx=(0,4), pady=(8,0))
+        ttk.Label(buttons, text="Copy this computer's current inventory and drafts to your A.C.E. USB.",
+                  wraplength=360).grid(row=1,column=2,columnspan=2,sticky='w',padx=8,pady=(8,0))
+
         from .completion_sound import enabled, play
         self.completion_sound_var = tk.BooleanVar(self, value=enabled())
         audio_controls = ttk.Frame(frame)
@@ -5946,6 +5951,37 @@ A.C.E. Manual
     def _apply_password_visibility(entry: ttk.Entry, *, visible: bool, toggle_text_var: tk.StringVar) -> None:
         entry.configure(show="" if visible else "*")
         toggle_text_var.set("Hide" if visible else "Show")
+
+    def _update_usb_copy(self) -> None:
+        if not self.current_admin:
+            self._show_error('Sign in before updating the USB copy.');return
+        from .config import BASE_DIR
+        from .usb_portable import read_marker
+        from .usb_setup import registry_data, LAUNCHER
+        from .usb_transfer import transfer_plan, export_to_usb
+        try:
+            marker=read_marker(BASE_DIR)
+            if not marker:raise ValueError('This copy must be installed using Set Up A.C.E. before updating its USB.')
+            registration=registry_data()['packages'].get(marker['package_id'])
+            if not registration:raise ValueError('No USB is registered for this inventory. Run Set Up A.C.E. from the correct USB.')
+            if not self._save_checkout_drafts() or not self._save_return_drafts():
+                raise ValueError('Current drafts could not be saved. Resolve the save error before updating the USB.')
+            plan=transfer_plan(BASE_DIR,registration)
+        except Exception as error:
+            self._show_error(str(error));return
+        computer=plan['computer'];usb=plan['usb']
+        prompt=(f"Copy this computer's current inventory to:\n{plan['target']}\n\n"
+                f"Computer: {computer['items']} item records, {computer['cadets']} cadets, {computer['transactions']} transactions.\n"
+                f"USB now: {usb['items']} item records, {usb['cadets']} cadets, {usb['transactions']} transactions.\n\n"
+                "The USB inventory will be replaced with this computer's snapshot. Data from other computers will not be merged. "
+                f"Both copies will be backed up in:\n{plan['backup']}\n\nKeep the USB connected until the completion message. Continue?")
+        if not messagebox.askyesno('Update USB Copy',prompt,parent=self):return
+        self._set_status('Updating USB copy. Keep the USB connected until verification finishes.');self.update_idletasks()
+        self._run_action(lambda:export_to_usb(BASE_DIR,registration,target=plan['target'],helper=LAUNCHER),
+            success_message=None,on_success=lambda result:self._show_info(
+                f"USB copy updated and verified at {result['target']}.\n"
+                f"{result['counts']['items']} item records, {result['counts']['cadets']} cadets, {result['counts']['transactions']} transactions.\n\n"
+                f"Recovery backup: {result['backup']}\n\nThe flash drive is ready. Safely eject it before unplugging."))
 
     def _show_error(self, message: str) -> None:
         self._set_status(f"Error: {message}")
