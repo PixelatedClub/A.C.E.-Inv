@@ -1593,7 +1593,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
 
         ttk.Label(
             frame,
-            text="Keep the database on the flash drive path you want to carry between laptops.",
+            text="Manage this installation's inventory and backup settings.",
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
         from .shortcuts import show_shortcut_guide
         ttk.Button(frame,text='Keyboard Shortcuts...',command=lambda:show_shortcut_guide(self)).grid(row=0,column=2,sticky='e')
@@ -1645,6 +1645,16 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         ttk.Button(buttons, text="Credits", command=self._show_credits).grid(
             row=0, column=3, sticky="ew", padx=(4, 0)
         )
+
+        from .completion_sound import enabled, play
+        self.completion_sound_var = tk.BooleanVar(self, value=enabled())
+        audio_controls = ttk.Frame(frame)
+        audio_controls.grid(row=7, column=0, columnspan=3, sticky='w', pady=(12, 0))
+        ttk.Checkbutton(audio_controls, text='Action completion sound',
+                        variable=self.completion_sound_var,
+                        command=self._save_completion_sound).pack(side='left')
+        ttk.Button(audio_controls, text='Preview Sound',
+                   command=lambda: play(preview=True)).pack(side='left', padx=(12, 0))
 
         security_frame = ttk.LabelFrame(self.settings_tab, text="Admin Security", padding=12)
         security_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -3264,11 +3274,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
             setup_completed=True,
         )
         self._set_status(f"Protected backups: {target_dir}")
-        messagebox.showinfo(
-            "Protected Backups Ready",
-            f"A compressed recovery backup was verified at:\n{status['last_copy_path']}",
-            parent=parent,
-        )
+        self._show_info(f"A compressed recovery backup was verified at:\n{status['last_copy_path']}")
         return True
 
     @staticmethod
@@ -5575,11 +5581,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, IndexBarcodeMixin, LoanUiMixi
         self._apply_window_icon_choice(self._random_window_icon_key())
         odds = ALTERNATE_RARE_ICON_ODDS if enabled else NORMAL_RARE_ICON_ODDS
         mode = "enabled" if enabled else "disabled"
-        messagebox.showinfo(
-            "Alternate Icons",
-            f"Alternate icons are {mode}. The rare icon chance is now 1 in {odds:,} per launch.",
-            parent=parent,
-        )
+        self._show_info(f"Alternate icons are {mode}. The rare icon chance is now 1 in {odds:,} per launch.")
         parent.destroy()
 
     def _open_hidden_easter_egg_export(self) -> None:
@@ -5907,7 +5909,14 @@ A.C.E. Manual
 
     def _show_info(self, message: str) -> None:
         self._set_status(message)
-        messagebox.showinfo(APP_TITLE, message, parent=self._dialog_parent())
+        from .completion_sound import show_completion
+        show_completion(self, message)
+
+    def _save_completion_sound(self) -> None:
+        from .completion_sound import save_enabled, enabled
+        if not save_enabled(self.completion_sound_var.get()):
+            self.completion_sound_var.set(enabled())
+            self._show_error('A.C.E. could not save the sound setting on this computer.')
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)

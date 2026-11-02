@@ -1,5 +1,10 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.7 - Completion chime - 2026-11-02
+
+- Add an original, locally generated three-note completion chime and per-computer mute/preview controls in Settings.
+- Replace successful-action Windows message boxes with a non-blocking A.C.E. completion popup, avoiding the system notification sound. Playback failures do not affect inventory actions.
+
 ## 1.9.0-cic.6 - Local installation and updates - 2026-11-02
 
 - Install the prepared USB inventory onto the computer once, then run without the USB. Later program updates never reseed or overwrite the working inventory.
