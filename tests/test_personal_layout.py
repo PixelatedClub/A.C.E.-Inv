@@ -52,3 +52,44 @@ class PersonalLayoutTests(unittest.TestCase):
         self.login(3)
         with patch.object(self.app,'_show_info') as info,patch.object(self.app,'refresh_loans') as refresh:
             self.app._check_loan_reminders();refresh.assert_called_once();info.assert_not_called()
+
+    def appearance_controls(self,window):
+        from tkinter import ttk
+        def descendants(parent):
+            for child in parent.winfo_children():yield child;yield from descendants(child)
+        all_widgets=list(descendants(window))
+        return ([w for w in all_widgets if isinstance(w,ttk.Entry) and not isinstance(w,ttk.Combobox)],
+                next(w for w in all_widgets if isinstance(w,ttk.Combobox) and 'Midnight' in w.cget('values')),
+                {w.cget('text'):w for w in all_widgets if isinstance(w,ttk.Button)})
+    def finish_preview(self):
+        import tkinter as tk
+        done=tk.BooleanVar(self.app,value=False)
+        self.app.after(110,lambda:done.set(True));self.app.wait_variable(done);self.app.update()
+    def test_presets_preview_without_saving_and_cancel_restores_saved_theme(self):
+        a=self.app;self.login(3);original=a.cget('background');window=open_preferences(a)
+        entries,preset,buttons=self.appearance_controls(window)
+        a.items_split.sash_place(0,450,0);before=a.items_split.sash_coord(0)
+        with patch('inventory_app.appearance._save_device_settings') as save:
+            preset.set('Midnight');preset.event_generate('<<ComboboxSelected>>');self.finish_preview()
+            self.assertEqual(a.cget('background'),'#1d2430');self.assertEqual(a.items_split.sash_coord(0),before)
+            entries[0].delete(0,'end');entries[0].insert(0,'#12');self.finish_preview()
+            self.assertEqual(a.cget('background'),'#1d2430')
+            entries[0].delete(0,'end');entries[0].insert(0,'#234567');self.finish_preview()
+            self.assertEqual(a.cget('background'),'#234567');save.assert_not_called()
+            buttons['Cancel'].invoke();a.update();self.assertEqual(a.cget('background'),original)
+    def test_preview_save_persists_and_stale_window_cannot_change_another_user(self):
+        a=self.app;self.login(3);window=open_preferences(a);entries,preset,buttons=self.appearance_controls(window)
+        def store(data):self.saved=copy.deepcopy(data);return True
+        with patch('inventory_app.appearance._save_device_settings',side_effect=store) as save:
+            preset.set('Forest');preset.event_generate('<<ComboboxSelected>>');self.finish_preview()
+            buttons['Save'].invoke();a.update();save.assert_called_once()
+            self.assertEqual(a.cget('background'),'#edf3ed')
+            window=open_preferences(a);entries,preset,buttons=self.appearance_controls(window)
+            preset.set('Midnight');preset.event_generate('<<ComboboxSelected>>');self.finish_preview()
+            self.login(4);expected=a.cget('background')
+            entries[0].delete(0,'end');entries[0].insert(0,'#102030');self.finish_preview()
+            self.assertEqual(a.cget('background'),expected)
+            with patch.object(a,'_show_error') as error:buttons['Save'].invoke();error.assert_called_once()
+            self.assertEqual(save.call_count,1)
+            window.destroy();a.update();self.assertEqual(a.cget('background'),expected)
+            self.login(3);self.assertEqual(a.cget('background'),'#edf3ed')

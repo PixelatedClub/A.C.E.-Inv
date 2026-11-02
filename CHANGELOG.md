@@ -1,5 +1,10 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.11 - Color presets and live preview - 2026-11-02
+
+- Add six built-in color presets and live previews for complete typed colors, selected colors and presets.
+- Persist only on Save; Cancel or closing the appearance window restores saved preferences. Preview does not reset panel dividers or affect a different signed-in administrator.
+
 ## 1.9.0-cic.10 - Subtle resize dividers - 2026-11-02
 
 - Use thin, flat, neutral resize dividers instead of thick accent-colored bars. Preserve dragging, vertical stacking and divider context menus.
