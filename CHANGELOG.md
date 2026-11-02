@@ -1,5 +1,9 @@
 # A.C.E. Changelog
 
+## 1.9.0-cic.10 - Subtle resize dividers - 2026-11-02
+
+- Use thin, flat, neutral resize dividers instead of thick accent-colored bars. Preserve dragging, vertical stacking and divider context menus.
+
 ## 1.9.0-cic.9 - Returns and personal appearance - 2026-11-02
 
 - Keep overdue cadet loan lists in Returns instead of opening reminder popups or expanding the global status bar.

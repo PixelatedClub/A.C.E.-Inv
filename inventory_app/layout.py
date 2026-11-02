@@ -5,9 +5,9 @@ from tkinter import ttk
 
 class ResizableSplit(tk.PanedWindow):
     def __init__(self, parent, *, orient=tk.HORIZONTAL, fraction=0.65, **kwargs):
-        super().__init__(parent, orient=orient, sashwidth=10, sashrelief='raised',
-                         showhandle=True, handlesize=10, opaqueresize=True,
-                         borderwidth=0, background='#c8d1da', **kwargs)
+        super().__init__(parent, orient=orient, sashwidth=5, sashrelief='flat',
+                         showhandle=False, opaqueresize=True,
+                         borderwidth=0, background='#d0d0d0', **kwargs)
         self.fraction=fraction
         self.default_orient=orient
         self.original_minimums=None

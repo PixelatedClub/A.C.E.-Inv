@@ -59,7 +59,7 @@ def apply_preferences(app):
     from tkinter import ttk
     for child in widgets(app):
         if isinstance(child,ResizableSplit):
-            child.configure(background=accent)
+            child.configure(background='#454545' if ink(background)=='#ffffff' else '#d0d0d0')
             if child is not getattr(app,'generator_stack',None):child.set_arrangement(palette['layout'])
         elif isinstance(child,tk.Canvas):child.configure(background=background)
         elif isinstance(child,tk.Text):child.configure(background=lists,foreground=list_text,insertbackground=list_text)

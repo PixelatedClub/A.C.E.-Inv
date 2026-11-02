@@ -1,6 +1,6 @@
 # A.C.E. Inventory System
 
-**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.9).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
+**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.10).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
 
 A.C.E. is a portable AFROTC clothing and equipment inventory system built for simple cadet use. It supports WINGS-ready imports and exports, searchable equipment records, compact barcode labels, scanner-based checkout and return, cadet history, reports, backups, and flash-drive deployment on Windows.
 
@@ -8,7 +8,7 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.9.0-cic.9 (November 2, 2026)**
+**Current source version: 1.9.0-cic.10 (November 2, 2026)**
 
 Overdue loan lists stay in **Returns > Temporary Loans**. Settings, Checkout and generator forms scroll vertically. Right-click a panel divider to stack panels vertically or arrange them side by side. **Settings > Personal Appearance / Layout** saves menu, accent and list colors for the signed-in administrator on this computer; another login starts with its own preferences. Colors are applied only after authentication.
 
