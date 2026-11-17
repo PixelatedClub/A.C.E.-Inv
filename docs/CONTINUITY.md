@@ -23,3 +23,12 @@ Inventory change reports record the stock deduction as **Graduation Acquisition*
 ## Repository and releases
 
 The public repository contains application source and handoff documentation for all detachments. Keep live SQLite files, device credentials, signed-in accounts, detachment-specific Forms configuration, responses, exported cadet records, and backups outside Git. Build and test the Windows package using the release process documented in the [README](../README.md).
+
+## Inventory recovery
+
+The [Windows release](https://github.com/PixelatedClub/A.C.E.-Inv/releases/latest) provides the program ZIP. Recover your detachment's inventory separately using the latest verified snapshot. Compare backup dates and the most recent transactions before selecting a copy.
+
+- **USB fails and the computer works.** Open the installed desktop shortcut. In **Settings**, verify the protected backup folder and select **Create Backup Now**. Once a replacement A.C.E. USB is prepared and registered, use **Update USB Copy** to refresh it.
+- **The computer fails and the USB works.** Run **Set Up A.C.E.exe** from the prepared USB on a new computer. First-time setup seeds the USB snapshot. On a computer with an existing installation, setup preserves its database. Reconcile activity since the snapshot before resuming work.
+- **A backup ZIP or a readable data folder survives.** Close A.C.E. and preserve the existing data folder, including any SQLite sidecar files. Extract `inventory.db` from the backup ZIP. Transfer recovery archives label the source and previous USB versions as `computer/inventory.db` and `usb_previous/inventory.db`. To verify the snapshot, extract a clean Windows release into a separate folder, place the snapshot in `portable_data/inventory.db` before first launch, and open that copy of **A.C.E.exe**. Verify counts, recent activity and open loans before resuming.
+- **Only a full Monday HTML report survives.** Open it in a browser. Use **Current Inventory** and the activity sections to reconstruct item counts, then confirm open issues and loan dates against issue records. Account for checked-out units in total stock and reconcile activity since the report. The HTML is a manual reference. A full restore requires a usable `inventory.db`.
