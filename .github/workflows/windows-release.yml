@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag, for example v1.9.0-cic.13
+        description: Release tag, for example v1.9.0-cic.32
         required: true
-        default: v1.9.0-cic.13
+        default: v1.9.0-cic.32
       prerelease:
         description: Mark as a beta/prerelease (does not replace the latest stable download)
         type: boolean
@@ -99,6 +99,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           IS_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          $releaseArgs = @('release', 'create', $env:RELEASE_TAG, 'release/A.C.E.zip', 'release/A.C.E.exe', 'release/Set Up A.C.E.exe', 'release/ace_release.json', 'release/SHA256SUMS.txt', '--title', "A.C.E. Inventory $env:RELEASE_TAG", '--notes-file', 'release/RELEASE_NOTES.md')
+          $releaseArgs = @('release', 'create', $env:RELEASE_TAG, 'release/A.C.E.zip', 'release/A.C.E.exe', 'release/Set Up A.C.E.exe', 'release/ace_release.json', 'release/SHA256SUMS.txt', 'docs/ACE_Continuity_Guide.pptx', '--target', $env:GITHUB_SHA, '--title', "A.C.E. Inventory $env:RELEASE_TAG", '--notes-file', 'release/RELEASE_NOTES.md')
           if ($env:IS_PRERELEASE -eq 'true') { $releaseArgs += '--prerelease' }
           gh @releaseArgs

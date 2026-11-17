@@ -22,4 +22,4 @@ Inventory change reports record the stock deduction as **Graduation Acquisition*
 
 ## Repository and releases
 
-The CIC branch contains application source and handoff documentation. Keep live SQLite files, device credentials, signed-in accounts, case-specific Forms configuration, responses, exported cadet records and backups outside Git. Build and test the Windows package using the release process documented in the [README](../README.md).
+The public repository contains application source and handoff documentation for all detachments. Keep live SQLite files, device credentials, signed-in accounts, detachment-specific Forms configuration, responses, exported cadet records, and backups outside Git. Build and test the Windows package using the release process documented in the [README](../README.md).

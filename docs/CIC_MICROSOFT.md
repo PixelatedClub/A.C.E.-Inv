@@ -1,6 +1,6 @@
 # Microsoft CIC branch
 
-This optional `feature/cic-sharepoint` branch uses a Microsoft-hosted form, Power Automate, a dedicated SharePoint document library, and OneDrive. Python A.C.E. reads the synchronized local copy. The authoritative inventory remains local; this is not a shared multi-user inventory database.
+Optional CIC intake uses a Microsoft-hosted form, Power Automate, a dedicated SharePoint document library, and OneDrive. Each detachment configures its own resources. A.C.E. reads the synchronized local copy and stores its working inventory locally.
 
 ## Cadet workflow
 

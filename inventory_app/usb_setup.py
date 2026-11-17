@@ -195,7 +195,7 @@ def _source_update(registration):
 
 def refresh_program(registration,root,*,force_online=False):
     from .installation import release,update_program,recover_program,cleanup_versions,version_key
-    from .program_updates import GitHubUpdates,existing_token,discard_download
+    from .program_updates import GitHubUpdates,discard_download
     root=Path(root);recover_program(root);validate_package(root)
     results=[];source=_source_update(registration)
     staged = root / 'staged_update'
@@ -215,7 +215,7 @@ def refresh_program(registration,root,*,force_online=False):
     if registration.get('online_updates') and (force_online or due):
         downloaded=None
         try:
-            downloaded=GitHubUpdates(existing_token()).fetch_newer(release(root)['version'],root/'update_cache')
+            downloaded=GitHubUpdates().fetch_newer(release(root)['version'],root/'update_cache')
             if downloaded:
                 results.append(update_program(downloaded,root,backup_folder=registration['backup_folder'],helper=LAUNCHER))
                 if source:

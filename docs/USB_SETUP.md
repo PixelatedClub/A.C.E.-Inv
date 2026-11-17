@@ -10,7 +10,7 @@ Each computer has its own inventory after installation. Updating program version
 
 ## Newer versions
 
-The desktop launcher checks a connected matching USB for a newer program. Optionally it checks this private repository's published CIC releases on GitHub, at most once every six hours; setup checks immediately. Existing GitHub CLI or Git credential access is used without a sign-in prompt. Offline or unauthorized checks retain the installed version. No credentials are copied into the USB, settings, releases or downloads.
+The desktop launcher checks a connected matching USB for a newer program. If online updates are enabled, it checks public A.C.E. releases on GitHub at most once every six hours. Setup checks immediately. Public downloads require no account. The installed version remains usable offline.
 
 A release must match the CIC channel and pass version, size, manifest and SHA-256 checks. Downgrades are skipped. A release requiring a newer setup utility is held until the utility is upgraded. A verified newer online program also updates the matching connected USB program, leaving its seed inventory unchanged. Unfinished program replacements are recovered on the next launch.
 

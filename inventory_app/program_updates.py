@@ -1,10 +1,7 @@
-"""Optional GitHub program updates; private access uses existing sign-in only."""
+"""Optional program updates from the public GitHub release channel."""
 import hashlib
 import json
-import os
 from pathlib import Path
-import shutil
-import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -13,27 +10,10 @@ from .installation import RELEASE, CHANNEL, MAX_PROGRAM, release, version_key
 from .usb_portable import atomic_json
 
 REPO='https://api.github.com/repos/PixelatedClub/A.C.E.-Inv'
+DOWNLOAD_ROOT='https://github.com/PixelatedClub/A.C.E.-Inv/releases/download/'
 
 
 class UpdateUnavailable(Exception):pass
-
-
-def existing_token():
-    """Never opens a sign-in prompt or writes a token to the USB/settings."""
-    env=dict(os.environ,GIT_TERMINAL_PROMPT='0',GCM_INTERACTIVE='never',GCM_GUI_PROMPT='false',GH_PROMPT_DISABLED='1')
-    try:
-        gh=shutil.which('gh')
-        if gh:
-            answer=subprocess.run([gh,'auth','token','--hostname','github.com'],capture_output=True,text=True,env=env,timeout=5,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            if answer.returncode==0 and answer.stdout.strip():return answer.stdout.strip()
-        git=shutil.which('git')
-        if git:
-            answer=subprocess.run([git,'credential','fill'],input='protocol=https\nhost=github.com\n\n',capture_output=True,text=True,env=env,timeout=5,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            if answer.returncode==0:
-                values=dict(line.split('=',1) for line in answer.stdout.splitlines() if '=' in line)
-                return values.get('password')
-    except (OSError,subprocess.TimeoutExpired):pass
-    return None
 
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -51,14 +31,15 @@ class GitHubUpdates:
     def __init__(self,token=None):
         self.token=token;self.opener=urllib.request.build_opener(SafeRedirect())
     def get(self,url,limit,*,binary=False):
-        if not url.startswith(REPO+'/'):raise UpdateUnavailable('Unexpected update API URL.')
+        if not (url.startswith(REPO+'/') or (binary and url.startswith(DOWNLOAD_ROOT))):
+            raise UpdateUnavailable('Unexpected update download URL.')
         headers={'User-Agent':'Team-Shapes-ACE-Updater','Accept':'application/octet-stream' if binary else 'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
-        if self.token:headers['Authorization']='Bearer '+self.token
+        if self.token and url.startswith(REPO+'/'):headers['Authorization']='Bearer '+self.token
         try:
             with self.opener.open(urllib.request.Request(url,headers=headers),timeout=8) as response:
                 raw=response.read(limit+1)
-        except (OSError,urllib.error.URLError) as error:
-            raise UpdateUnavailable('GitHub updates are unavailable or this computer is not signed in to the private repository.') from None
+        except (OSError,urllib.error.URLError):
+            raise UpdateUnavailable('GitHub updates are unavailable.') from None
         if len(raw)>limit:raise UpdateUnavailable('The update download exceeds its size limit.')
         return raw
     def fetch_newer(self,current,cache):
@@ -81,7 +62,9 @@ class GitHubUpdates:
             value=assets[name]
             if type(value.get('id')) is not int or type(value.get('size')) is not int or not 0<value['size']<=limit:
                 raise UpdateUnavailable('The release asset metadata is invalid.')
-            raw=self.get(REPO+'/releases/assets/'+str(value['id']),limit,binary=True)
+            url = (REPO+'/releases/assets/'+str(value['id']) if self.token else
+                   DOWNLOAD_ROOT + urllib.parse.quote(str(entry['tag_name']), safe='') + '/' + urllib.parse.quote(name, safe=''))
+            raw=self.get(url,limit,binary=True)
             if len(raw)!=value['size']:raise UpdateUnavailable('The update download is incomplete.')
             expected=value.get('digest')
             if expected and expected!='sha256:'+hashlib.sha256(raw).hexdigest():raise UpdateUnavailable('The GitHub asset checksum did not match.')

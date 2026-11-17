@@ -8,7 +8,7 @@ from inventory_app.installation import (make_release,release,install_local,updat
                                        owned_archives,recover_program,RELEASE)
 from inventory_app.usb_portable import atomic_json,new_marker,MARKER
 from inventory_app.usb_setup import launch_registered
-from inventory_app.program_updates import GitHubUpdates,UpdateUnavailable,SafeRedirect,REPO
+from inventory_app.program_updates import GitHubUpdates,UpdateUnavailable,SafeRedirect,REPO,DOWNLOAD_ROOT
 
 
 class LocalInstallTests(unittest.TestCase):
@@ -98,6 +98,15 @@ class OnlineUpdateTests(unittest.TestCase):
             replies[REPO+'/releases/assets/2']=b'MZtampered'
             with patch.object(client,'get',side_effect=lambda url,*a,**k:replies[url]):
                 with self.assertRaises(UpdateUnavailable):client.fetch_newer('1.9.0-cic.6',root/'badcache')
+            public = GitHubUpdates()
+            public_replies = {
+                REPO+'/releases?per_page=100': listing,
+                DOWNLOAD_ROOT+'v1.9.0-cic.7/'+RELEASE: raw,
+                DOWNLOAD_ROOT+'v1.9.0-cic.7/A.C.E.exe': binary,
+            }
+            with patch.object(public,'get',side_effect=lambda url,*a,**k:public_replies[url]):
+                found = public.fetch_newer('1.9.0-cic.6',root/'public-cache')
+            self.assertEqual(release(found)['version'],'1.9.0-cic.7')
     def test_redirect_does_not_forward_github_token(self):
         handler=SafeRedirect();request=urllib.request.Request(REPO+'/releases/assets/1',headers={'Authorization':'Bearer fixture-token'})
         result=handler.redirect_request(request,None,302,'redirect',{},'https://release-assets.githubusercontent.com/file')

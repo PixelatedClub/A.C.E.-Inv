@@ -1,6 +1,6 @@
 # A.C.E. Inventory System
 
-**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.32).** Optional Microsoft Forms / SharePoint intake feeds the staff approval queue from a read-only OneDrive-synced inbox. It requires deployment-specific Microsoft resources and is disabled by default. [CIC setup](docs/CIC_MICROSOFT.md).
+**Available to all detachments.** Each installation starts with its own local inventory. Optional Microsoft Forms and SharePoint intake feeds the staff approval queue from a read-only OneDrive-synced inbox. Each detachment supplies its own Microsoft resources when enabling this feature. [CIC setup](docs/CIC_MICROSOFT.md).
 
 **Operator handoff:** [Continuity PowerPoint](docs/ACE_Continuity_Guide.pptx) and [handoff checklist](docs/CONTINUITY.md).
 
@@ -75,11 +75,11 @@ The consolidated Items workspace displays every barcode with category and item t
 
 **[Download the current A.C.E. Windows application](https://github.com/PixelatedClub/A.C.E.-Inv/releases/latest/download/A.C.E.zip)**
 
-The download is named `A.C.E.zip` and contains `A.C.E.exe`. Extract the ZIP before running the application. The files shown in the main repository are the application source code, documentation, icons, animation, and audio assets.
+Extract `A.C.E.zip` into a writable folder and run `A.C.E.exe` to start a new local inventory. The ZIP also contains the utility for prepared USB installations. [USB setup and upgrades](docs/USB_SETUP.md).
 
 The application starts with:
 
-- No inventory records
+- Catalog-based inventory records with zero stock
 - No cadet records
 - No checkout history
 - The permanent cadre administrator code `Det005`
