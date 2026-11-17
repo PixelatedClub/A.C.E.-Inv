@@ -7,7 +7,8 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog
 
-from .cic_sharepoint import FIELDS, FAMILIES, InboxReader, load_profile
+from .cic_sharepoint import FIELDS, FAMILIES, InboxReader, PATCH_ANSWER_PROMPTS, load_profile, parse_answers
+from .catalog_inventory import item_key
 from .cic_questions import QUESTIONS
 from .config import load_device_settings, _save_device_settings
 
@@ -20,7 +21,6 @@ class MicrosoftCicUiMixin:
         self.microsoft_errors = []
         self.microsoft_status = tk.StringVar(value='Microsoft intake is not configured.')
         ttk.Button(controls, text='Microsoft Intake', command=self._microsoft_setup).pack(side='left', padx=3)
-        ttk.Button(controls, text='Correct Microsoft Answers', command=self._correct_microsoft_answers).pack(side='left', padx=3)
         ttk.Label(self.cic_tab, textvariable=self.microsoft_status, wraplength=1100).grid(row=4, column=0, sticky='w', pady=4)
         settings = load_device_settings().get('cic_microsoft', {})
         if settings.get('enabled'):
@@ -116,12 +116,12 @@ class MicrosoftCicUiMixin:
             self.microsoft_worker.start()
         self.after(10000, self._poll_microsoft_cic)
 
-    def _correct_microsoft_answers(self):
+    def _correct_microsoft_answers(self, card_id=None, review_window=None, focus_issue=None):
         try:
             self._cic_admin()
             if not self.microsoft_reader:
                 raise ValueError('Configure Microsoft Intake with this form profile first.')
-            card_id = self._selected_cic()
+            card_id = card_id or self._selected_cic()
             if not card_id:
                 raise ValueError('Select a Microsoft CIC card first.')
             card = self.service.get_cic(card_id)
@@ -132,11 +132,39 @@ class MicrosoftCicUiMixin:
                 raise ValueError('This card was not received from Microsoft Forms.')
         except Exception as error:
             self._show_error(str(error)); return
+        original_answers = dict(answers)
+        catalog = {item_key(row['item_no']): row for row in self.service.cic_catalog()}
+        counts = json.loads(card['assessment_json']) or parse_answers(answers, list(catalog.values()))[0]['assessment']
+        # Show staff selections as exact lines when the group's full quantity is
+        # represented. This lets one row be corrected without reinterpreting the others.
+        for group, _, _ in QUESTIONS:
+            lines = [line for line in card['lines'] if line['group_key'] == group]
+            if not lines or sum(line['quantity'] for line in lines) != counts.get(group):
+                continue
+            formatted = []
+            for line in lines:
+                item = catalog.get(item_key(line['item_no']))
+                if item and not line['problem'] and item['group'] == group:
+                    formatted.append(f"{item['item_no']} | {item['size']} | {line['quantity']}")
+                elif not line['item_no'] and line['entered_name'] == line['entered_size']:
+                    formatted.append(f"{line['entered_name']} qty {line['quantity']}")
+                else:
+                    break
+            if len(formatted) == len(lines) and any(line['item_no'] for line in lines):
+                answers[group+'.sizes'] = '\n'.join(formatted)
         dialog = tk.Toplevel(self); dialog.title('Correct Microsoft CIC Answers'); dialog.geometry('850x740')
         frame = ttk.Frame(dialog, padding=12); frame.pack(fill='both', expand=True)
         ttk.Label(frame, text='Correct identity, counts or size lines below.\nEnter ordinary sizes, for example Medium regular x2 or 7 3/8. Add summer/all weather, mens/womens or width when needed.\nThe original submission is retained. Saving corrections does not approve the card.', wraplength=800).pack(anchor='w', pady=8)
         tabs=ttk.Notebook(frame);tabs.pack(fill='both',expand=True)
         variables={};text_fields={}
+        issue_targets = {}
+        issues = json.loads(card['intake_issues_json'])
+        issue_list = tk.Listbox(frame, height=min(5, max(1, len(issues))), exportselection=False)
+        if issues:
+            ttk.Label(frame, text='Hold reasons. Double-click an issue to open its fields.').pack(anchor='w', before=tabs)
+            issue_list.pack(fill='x', before=tabs, pady=(2, 8))
+            for issue in issues:
+                issue_list.insert('end', issue)
         def entry(parent,key,label,choices=None):
             ttk.Label(parent,text=label).pack(anchor='w',pady=(8,2))
             var=tk.StringVar(value=answers.get(key,''));variables[key]=var
@@ -157,20 +185,45 @@ class MicrosoftCicUiMixin:
                 group=ttk.LabelFrame(body,text=label,padding=10);group.pack(fill='x',pady=8)
                 entry(group,key+'.has_item','Possesses this item?',('Yes','No','yes','no'))
                 entry(group,key+'.count','Quantity')
-                ttk.Label(group,text='Size and type, one line per size. Example: Small regular summer x2 (no item ID needed)').pack(anchor='w',pady=(8,2))
+                prompt = PATCH_ANSWER_PROMPTS.get(key, 'Size and type, one line per size. Example: Small regular summer x2')
+                ttk.Label(group,text=prompt,wraplength=720).pack(anchor='w',pady=(8,2))
                 text=tk.Text(group,height=3,wrap='word');text.pack(fill='x');text.insert('1.0',answers.get(key+'.sizes',''));text_fields[key+'.sizes']=text
+                issue_targets[f'{family} {label}:'] = (page, canvas, body, group, text)
+        def focus_field(issue):
+            for prefix, (page, canvas, body, group, text) in issue_targets.items():
+                if issue.startswith(prefix):
+                    tabs.select(page)
+                    dialog.update_idletasks()
+                    canvas.yview_moveto(group.winfo_y() / max(1, body.winfo_height()))
+                    text.focus_set()
+                    return
+            tabs.select(identity)
+        def open_issue(event):
+            if issues:
+                focus_field(issues[issue_list.nearest(event.y)])
+        issue_list.bind('<Double-1>', open_issue)
+        if focus_issue:
+            dialog.after_idle(lambda: focus_field(focus_issue))
         def save():
             try:
                 corrected={key:var.get() for key,var in variables.items()}
                 corrected.update({key:text.get('1.0','end').strip() for key,text in text_fields.items()})
+                for group, _, _ in QUESTIONS:
+                    fields = tuple(group + suffix for suffix in ('.has_item','.count','.sizes'))
+                    if all(corrected[field] == answers[field] for field in fields):
+                        corrected.update({field:original_answers[field] for field in fields})
                 for key,family in FAMILIES:
                     if corrected[key+'.has_items'].casefold()=='no':
                         for item,fam,_ in QUESTIONS:
                             if fam==family:corrected.update({item+'.has_item':'No',item+'.count':'0',item+'.sizes':''})
                 for key,_,_ in QUESTIONS:
                     if corrected[key+'.has_item'].casefold()=='no':corrected.update({key+'.count':'0',key+'.sizes':''})
-                self.service.correct_microsoft_cic(card_id, corrected, approved_by=self._cic_admin(), expected_version=card['version'])
+                self.service.correct_microsoft_cic(card_id, corrected, approved_by=self._cic_admin(),
+                    expected_version=card['version'], profile=self.microsoft_reader.profile)
                 self.refresh_cic(); dialog.destroy()
+                if review_window is not None:
+                    review_window.destroy()
+                    self._review_cic()
             except Exception as error:
                 self._show_error(str(error))
         ttk.Button(frame, text='Save Corrections for Review', command=save).pack(pady=8)

@@ -249,9 +249,10 @@ from .acquisition_undo import AcquisitionUndoMixin
 from .catalog_inventory import CatalogInventoryMixin
 from .cic import CicServiceMixin
 from .cic_sharepoint import SharePointCicMixin
+from .graduation import GraduationServiceMixin
 
 
-class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryMixin, CicServiceMixin, SharePointCicMixin):
+class InventoryService(LoanServiceMixin, AcquisitionUndoMixin, CatalogInventoryMixin, CicServiceMixin, SharePointCicMixin, GraduationServiceMixin):
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
         self.database = InventoryDatabase(settings)

@@ -20,6 +20,7 @@ from .wings_catalog import WINGS_CATALOG
 from .wings_catalog_official_import import WINGS_OFFICIAL_IMPORT_ADDITIONS
 from .catalog_inventory import COUNT_SCHEMA
 from .cic import CIC_SCHEMA
+from .graduation import SCHEMA as GRADUATION_SCHEMA
 
 
 # Compatibility constants are intentionally empty in the clean deployment.
@@ -381,6 +382,7 @@ class InventoryDatabase:
         try:
             connection.executescript(SCHEMA_SQL)
             connection.executescript(CIC_SCHEMA)
+            connection.executescript(GRADUATION_SCHEMA)
             from .cic_sharepoint import REMOTE_SCHEMA
             connection.executescript(REMOTE_SCHEMA)
             for table,column,definition in [('cic_cards','assessment_json',"TEXT NOT NULL DEFAULT '{}'"),('cic_lines','group_key',"TEXT NOT NULL DEFAULT ''"),('cic_cards','intake_issues_json',"TEXT NOT NULL DEFAULT '[]'")]:

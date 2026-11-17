@@ -24,18 +24,21 @@ def question_for(item):
     if 'afrotc patch' in name and 'colored' not in name:return 'ocp.afrotc'
     if 'brown cotton shirt' in name:return 'ocp.shirt'
     if 'nametape' in name or 'name tape' in name:return 'ocp.other'
+    if 'beanie' in name or 'beenie' in name:return 'ocp.other'
     if 'service coat' in text or 'service dress coat' in text:return 'service.coat'
     if 'service cap' in text or 'wheel cap' in text:return 'service.cap'
     if 'flight suit' in text:return 'other.flight'
     if 'tie tab' in text or 'tie-tab' in text:return 'blues.tietab'
+    if 'belt' in name and ('blue' in text or 'blues' in text) and 'high visibility' not in name:return 'blues.belt'
+    if all(word in name for word in ('insignia', 'rank', 'cloth')) and 'ocp' not in text:return 'blues.rank'
     if any(x in text for x in ('ocp','patrol','coyote','rigger')):
         for detail in details:
             for words,key in [(('afrotc','af rotc'),'afrotc'),(('flag',),'flag'),(('rank','insignia'),'rank'),(('patrol','cap','cover'),'cover'),(('fleece',),'fleece'),(('boot',),'boots'),(('sock',),'socks'),(('belt','rigger'),'belt'),(('t-shirt','tshirt','undershirt','shirt tan'),'shirt'),(('trouser','pant'),'trousers'),(('blouse','coat','shirt'),'coat')]:
                 if any(word in detail for word in words):return 'ocp.'+key
         return 'ocp.other'
-    if any(x in text for x in ('physical training','ptg','ptu','iptu','pt wear','track',' pt ','pt shirt','pt pant','pt jacket','pt short')):
+    if any(x in text for x in ('physical training','physical fit','ptg','ptu','iptu','pt wear','track',' pt ','pt shirt','pt pant','pt jacket','pt short')):
         for detail in details:
-            for words,key in [(('short','trunk'),'shorts'),(('pant',),'pants'),(('jacket',),'jacket'),(('shirt',),'shirt')]:
+            for words,key in [(('pant',),'pants'),(('jacket',),'jacket'),(('shirt',),'shirt'),(('shorts','trunk'),'shorts')]:
                 if any(word in detail for word in words):return 'ptg.'+key
         return 'ptg.other'
     if any(x in text for x in ('blues','blue','flight cap','lightweight','windbreaker','shirt, mens','shirt, womens','trousers, mens','slacks','shoes, mens','shoes, womens','tie','buckle')):

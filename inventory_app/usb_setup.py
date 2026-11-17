@@ -198,6 +198,13 @@ def refresh_program(registration,root,*,force_online=False):
     from .program_updates import GitHubUpdates,existing_token,discard_download
     root=Path(root);recover_program(root);validate_package(root)
     results=[];source=_source_update(registration)
+    staged = root / 'staged_update'
+    if staged.is_dir() and staged.resolve().parent == root.resolve():
+        try:
+            if version_key(release(staged)['version']) > version_key(release(root)['version']):
+                results.append(update_program(staged,root,backup_folder=registration['backup_folder'],helper=LAUNCHER))
+        except (OSError, ValueError) as error:
+            results.append({'status': f'Staged update deferred: {error}'})
     if source:
         try:results.append(update_program(source,root,backup_folder=registration['backup_folder'],helper=LAUNCHER))
         except Exception:results.append({'status':'The USB update could not be verified; the installed program was retained.'})

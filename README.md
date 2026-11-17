@@ -1,6 +1,8 @@
 # A.C.E. Inventory System
 
-**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.13).** Optional Microsoft Forms / SharePoint intake feeds the existing staff approval queue through a read-only OneDrive-synced inbox. This requires deployment-specific Microsoft resources; it is not enabled by default and is separate from the general `main` build. [Setup and limitations](docs/CIC_MICROSOFT.md).
+**Microsoft CIC branch: `feature/cic-sharepoint` (1.9.0-cic.32).** Optional Microsoft Forms / SharePoint intake feeds the staff approval queue from a read-only OneDrive-synced inbox. It requires deployment-specific Microsoft resources and is disabled by default. [CIC setup](docs/CIC_MICROSOFT.md).
+
+**Operator handoff:** [Continuity PowerPoint](docs/ACE_Continuity_Guide.pptx) and [handoff checklist](docs/CONTINUITY.md).
 
 A.C.E. is a portable AFROTC clothing and equipment inventory system built for simple cadet use. It supports WINGS-ready imports and exports, searchable equipment records, compact barcode labels, scanner-based checkout and return, cadet history, reports, backups, and flash-drive deployment on Windows.
 
@@ -8,7 +10,9 @@ A.C.E. is a portable AFROTC clothing and equipment inventory system built for si
 
 A.C.E. is developed and published under the **Team Shapes** brand.
 
-**Current source version: 1.9.0-cic.13 (November 2, 2026)**
+**Current source version: 1.9.0-cic.32**
+
+Use **Cadets > Graduation** to approve an expected or actual graduation date. A.C.E. processes cleanup after a one-calendar-year grace period once a user signs in. Units still checked out reduce total stock as a permanent issue. A.C.E. removes the cadet's checkout and return history from the working database and keeps a summary of the cleanup.
 
 Use **Settings > Update USB Copy** to refresh the registered flash drive with this computer's current inventory, checkout/return drafts, CIC profile, labels, exports and program. The destination and record counts appear before confirmation. A compact computer recovery archive preserves both inventories before replacement; the newest ten such archives are retained. This is an explicit computer-to-USB snapshot, not a merge between computers. Interrupted refreshes block USB installation until retried.
 

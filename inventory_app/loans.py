@@ -122,6 +122,11 @@ class LoanServiceMixin:
             duplicate = connection.execute('SELECT * FROM cadets WHERE cadet_id=?', (duplicate_id,)).fetchone()
             if not keep or not duplicate:
                 raise InventoryError('Both profiles must exist.')
+            if connection.execute(
+                "SELECT 1 FROM cadet_graduations WHERE cadet_id IN (?,?) AND completed_at=''",
+                (keep_id, duplicate_id),
+            ).fetchone():
+                raise InventoryError('Cancel the pending graduation schedule before merging these profiles.')
             sizes = connection.execute('SELECT * FROM cadet_size_entries WHERE cadet_id=?', (duplicate_id,)).fetchall()
             conflicts = []
             for size in sizes:

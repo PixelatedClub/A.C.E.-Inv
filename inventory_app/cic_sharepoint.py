@@ -26,7 +26,12 @@ FAMILIES = list(dict.fromkeys((key.split('.')[0], family) for key, family, _ in 
 FIELDS += [(key + '.has_items', f'Do you currently possess any {family} items?') for key, family in FAMILIES]
 FIELDS += [(key + '.has_item', f'{family} {label} possessed') for key, family, label in QUESTIONS]
 FIELDS += [(key + '.count', f'{family} {label} quantity') for key, family, label in QUESTIONS]
-FIELDS += [(key + '.sizes', f'{family} {label} sizes and types') for key, family, label in QUESTIONS]
+PATCH_ANSWER_PROMPTS = {
+    'ocp.afrotc': 'Patch type or color, for example Spice Brown or Full Color',
+    'ocp.flag': 'Flag color, for example Spice Brown or Full Color',
+    'ocp.rank': 'Cadet rank and patch color, for example C/Capt, Spice Brown',
+}
+FIELDS += [(key + '.sizes', f'{family} {label} {PATCH_ANSWER_PROMPTS.get(key, "sizes and types")}') for key, family, label in QUESTIONS]
 
 REMOTE_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS cic_remote (
@@ -76,6 +81,46 @@ def decode_answers(envelope, profile):
             for key, qid in profile['field_map'].items()}
 
 
+def split_weather_sizes(text):
+    """Expand explicit fabric quantities that share a garment size."""
+    weather = r'(?:summers?|all[ -]weathers?|hot[ -]weathers?)'
+    shared = re.fullmatch(
+        rf'(\d+)\s+({weather}),\s*(\d+)\s+({weather})[.!]\s*All are\s+(.+)',
+        text, re.I,
+    )
+    if shared:
+        first, first_type, second, second_type, size = shared.groups()
+        return f'{size} {first_type} x{first}\n{size} {second_type} x{second}'
+    parenthetical = re.fullmatch(r'([^()]+)\s*(\(.+\))', text)
+    if parenthetical:
+        size, details = parenthetical.groups()
+        expanded = []
+        for part in re.split(r'\)\s*\(|,\s*', details[1:-1]):
+            before = re.fullmatch(rf'x\s*(\d+)\s+({weather})', part.strip(), re.I)
+            after = re.fullmatch(rf'({weather})\s+x\s*(\d+)', part.strip(), re.I)
+            if not (before or after):
+                return text
+            quantity, fabric = before.groups() if before else after.groups()[::-1]
+            expanded.append(f'{size.strip()} {fabric} x{quantity}')
+        return '\n'.join(expanded)
+    return text
+
+
+def split_pt_style_sizes(text):
+    """Keep distinct old/new quantities when the submission gives both."""
+    size = r'(?:x{0,3}[sl]|m|small|medium|large|extra small|extra large)'
+    match = re.fullmatch(
+        rf'({size})\s+(?:\(\s*x\s*)?(\d+)\s+(old|new)(?:\s+and\s+|,\s*x\s*)(\d+)\s+(old|new)\s*\)?',
+        text, re.I,
+    )
+    if not match:
+        return text
+    size, first_count, first_style, second_count, second_style = match.groups()
+    if first_style.casefold() == second_style.casefold():
+        return text
+    return f'{size} {first_style} style x{first_count}\n{size} {second_style} style x{second_count}'
+
+
 def parse_answers(answers, catalog):
     """Context-scoped aliases and ordinary size entries; uncertainty stays held."""
     issues = []
@@ -98,8 +143,19 @@ def parse_answers(answers, catalog):
             issues.append(f'{family}: answer Yes or No to possessing this uniform family.')
         family_answers[key] = answer
     for key, family, label in QUESTIONS:
+        detail_lines = 'patch descriptions' if key in PATCH_ANSWER_PROMPTS else 'size lines'
         value = answers.get(key + '.count', '').strip()
         text = answers.get(key + '.sizes', '').strip()
+        if key in ('ocp.coat', 'ocp.trousers'):
+            text = split_weather_sizes(text)
+        if key in ('ptg.shirt','ptg.shorts'):
+            text = split_pt_style_sizes(text)
+        if key in ('ocp.coat','ocp.trousers','ptg.pants','ptg.jacket'):
+            parts = re.split(r'\s*[,;\n]\s*', text)
+            sized_counts = [re.fullmatch(r'(\d{1,3})\s+((?:xxs|xs|s|m|l|xl|xxl)\s*/\s*(?:xs|s|r|l|xl))', part, re.I)
+                            for part in parts]
+            if all(sized_counts):
+                text = '\n'.join(f'{match[2]} x{match[1]}' for match in sized_counts)
         if family_answers[key.split('.')[0]] == 'no':
             if value not in ('', '0', '0 - None') or norm(text) not in ('', '0', 'none', 'n/a'):
                 issues.append(f'{family} {label}: No family possession conflicts with saved item answers. Confirm the correct answers.')
@@ -129,10 +185,33 @@ def parse_answers(answers, catalog):
         else:
             count = int(value)
         counts[key] = count
+        if key == 'ocp.belt':
+            belt = re.fullmatch(r'(\d{1,3})\s*,\s*(\d{2})\s*["”]?',text)
+            if belt:
+                text = f'{belt[2]} qty {belt[1]}'
+        if key in ('ocp.flag','ocp.afrotc') and has_item == 'yes' and not large_count and count > 0 and text == str(count):
+            text = 'Flag' if key == 'ocp.flag' else 'AFROTC Patch'
+        if key == 'blues.belt' and not large_count and 0 < count <= 50 and has_item == 'yes' and norm(text) in (
+            '', 'n/a', 'belt', 'blues belt', 'belt and buckle', 'belt plus buckle', 'belt + buckle',
+        ):
+            counts[key] = count * 2
+            for item_no, component_name in [('LOCAL-BLUES-BELT-SIZEUNSPECIFIED', 'Blues Belt'), ('1', 'Belt Buckle')]:
+                item = next((row for row in catalog if item_key(row['item_no']) == item_key(item_no)), None)
+                if item is None:
+                    issues.append(f'{family} {label}: add {component_name} to the ACE catalog and map this line.')
+                lines.append({'item_no': item['item_no'] if item else '',
+                              'name': item['name'] if item else component_name,
+                              'size': item['size'] if item else 'SIZE UNSPECIFIED',
+                              'quantity': count, 'group': key})
+            continue
         allocated = 0
         if norm(text) in ('none', '0', 'n/a'):
             text = ''
         rows = [row.strip() for row in re.split(r'[\n;]+', text) if row.strip()]
+        if key == 'blues.shirt' and count == 1 and len(rows) == 2 and re.fullmatch(r'\d{2}(?:\.\d+| 1/2)?',rows[0]):
+            combined = ' '.join(rows)
+            if len(match_human(combined,key,catalog)) == 1:
+                rows = [combined]
         for row in rows:
             parts = [p.strip() for p in row.split('|')]
             cat = None
@@ -146,6 +225,11 @@ def parse_answers(answers, catalog):
                     matches = match_human(description + ' ' + size, key, catalog)
             elif len(parts) == 1:
                 description, qty = row_quantity(row)
+                if qty is None and key in ('ocp.coat','ocp.trousers','ocp.fleece','ocp.rank','ptg.pants','ptg.jacket'):
+                    leading = re.fullmatch(r'(one|two|three)\s+(?!size\b)(.+)',description,re.I)
+                    if leading:
+                        qty = {'one':1,'two':2,'three':3}[leading[1].lower()]
+                        description = leading[2]
                 size = description
                 if qty is None and key in ('ocp.flag', 'ocp.afrotc'):
                     patch_count = re.fullmatch(r'(\d+)\s+((?:spice|brown|coyote|tan)\b.*)', description, re.I)
@@ -157,7 +241,8 @@ def parse_answers(answers, catalog):
                     elif len(rows) == count:
                         qty = 1
                     else:
-                        issues.append(f'{family} {label}: say how many of each size, for example Medium x2.'); continue
+                        example = 'Spice Brown x2' if key in PATCH_ANSWER_PROMPTS else 'Medium x2'
+                        issues.append(f'{family} {label}: give a quantity for each entry, for example {example}.'); continue
                 if not 1 <= qty <= 100:
                     issues.append(f'{family} {label}: quantity per size must be 1 to 100.'); continue
                 matches = match_human(description, key, catalog)
@@ -166,7 +251,13 @@ def parse_answers(answers, catalog):
                         choices = '; '.join(f"{c['name']} / {c['size']}" + (f" ({c['sex']})" if c.get('sex') else '') for c in matches[:5])
                         issues.append(f'{family} {label}: "{row[:120]}" matches multiple items. Specify type, summer/all weather, mens/womens or width as applicable. Options: {choices}.')
                     else:
-                        issues.append(f'{family} {label}: could not match "{row[:120]}". Confirm its label size and type in ACE; no item ID is required.')
+                        suggestions = match_human(description, key, catalog, suggest_incomplete=True)
+                        if suggestions:
+                            choices = '; '.join(f"{c['name']} / {c['size']}" + (f" ({c['sex']})" if c.get('sex') else '') for c in suggestions[:5])
+                            issues.append(f'{family} {label}: "{row[:120]}" needs a size or fit detail. Possible items: {choices}.')
+                        else:
+                            detail = 'patch type, color or rank' if key in PATCH_ANSWER_PROMPTS else 'label size and type'
+                            issues.append(f'{family} {label}: could not match "{row[:120]}". Confirm its {detail} in ACE; no item ID is required.')
             else:
                 issues.append(f'{family} {label}: enter a size such as Medium regular x2, one size per line.'); continue
             allocated += qty
@@ -176,7 +267,7 @@ def parse_answers(answers, catalog):
         if large_count and 11 <= allocated <= 100:
             counts[key] = allocated
         elif allocated != count or (large_count and allocated < 11):
-            issues.append(f'{family} {label}: quantity {count}, but size lines total {allocated}.')
+            issues.append(f'{family} {label}: quantity {count}, but {detail_lines} total {allocated}.')
     if sum(counts.values()) > 500 or sum(l['quantity'] for l in lines) > 500:
         issues.append('A card cannot contain more than 500 items.')
     if len(lines) > 100:
@@ -186,6 +277,30 @@ def parse_answers(answers, catalog):
 
 
 class SharePointCicMixin:
+    def _link_microsoft_cadet(self, c, card_id, name, email, actor):
+        from .cic import name_key
+        name, email = self._validate_cadet_identity(name, email)
+        parts = [part.strip() for part in name.split(',')]
+        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email) or (len(parts) == 3 and len(parts[1]) != 1):
+            c.execute('UPDATE cic_cards SET cadet_id=NULL WHERE card_id=?', (card_id,))
+            return
+        candidates = c.execute('SELECT cadet_id, full_name, email FROM cadets').fetchall()
+        matching_names = [r for r in candidates if name_key(r['full_name']) == name_key(name)]
+        matching_email = next((r for r in candidates if norm(r['email']) == norm(email)), None)
+        if matching_email and name_key(matching_email['full_name']) == name_key(name):
+            cadet_id = matching_email['cadet_id']
+            action = 'Cadet profile linked'
+        elif matching_email or matching_names:
+            c.execute('UPDATE cic_cards SET cadet_id=NULL WHERE card_id=?', (card_id,))
+            return
+        else:
+            cadet_id = self._upsert_cadet(c, name, email)['cadet_id']
+            action = 'Cadet profile created'
+        card = c.execute('SELECT cadet_id FROM cic_cards WHERE card_id=?', (card_id,)).fetchone()
+        if card['cadet_id'] != cadet_id:
+            c.execute('UPDATE cic_cards SET cadet_id=? WHERE card_id=?', (cadet_id, card_id))
+            self._cic_event(c, card_id, action, actor, f'Cadet profile #{cadet_id} linked from Microsoft intake.')
+
     def import_microsoft_cic(self, envelope, profile, *, source_file='', secret):
         """Durably import once without acknowledging by changing a cloud file."""
         if envelope.get('schema') != SCHEMA or envelope.get('form_id') != profile['form_id']:
@@ -240,6 +355,8 @@ class SharePointCicMixin:
             c.execute('INSERT INTO cic_remote(source_key,card_id,payload_hash,original_json,imported_at,source_file) VALUES(?,?,?,?,?,?)',
                       (source, card['card_id'], digest, original, now(), source_file))
             if card['status'] in ('Pending', 'Held'):
+                if valid_identity:
+                    self._link_microsoft_cadet(c, card['card_id'], parsed['name'], parsed['email'], 'Microsoft intake')
                 c.execute('UPDATE cic_cards SET intake_issues_json=? WHERE card_id=?', (json.dumps(issues), card['card_id']))
                 if issues:
                     c.execute("UPDATE cic_cards SET status='Held' WHERE card_id=?", (card['card_id'],))
@@ -256,27 +373,52 @@ class SharePointCicMixin:
                 return None
             return json.loads(row['corrected_json']) if row['corrected_json'] else decode_answers(json.loads(row['original_json']), profile)
 
-    def correct_microsoft_cic(self, card_id, answers, *, approved_by, expected_version):
+    def correct_microsoft_cic(self, card_id, answers, *, approved_by, expected_version, profile=None):
         actor = self._normalize_admin_identity(approved_by)['label']
         if not isinstance(answers, dict) or set(answers) != {k for k, _ in FIELDS} or any(not isinstance(v, str) for v in answers.values()):
             raise ValueError('Keep all question keys and use text answers.')
         parsed, issues = parse_answers(answers, self.cic_catalog())
         self._validate_cadet_identity(parsed['name'], parsed['email'])
-        if len(parsed['lines']) > 100 or sum(l['quantity'] for l in parsed['lines']) > 500:
-            raise ValueError('Reduce the card to at most 100 size lines and 500 items.')
         with closing(self.database.connect()) as c:
             c.execute('BEGIN IMMEDIATE')
             card = self._cic_card(c, card_id)
             if card['status'] not in ('Pending', 'Held') or card['version'] != expected_version:
                 raise ValueError('Card changed or was finalized. Reopen it before correcting.')
-            if c.execute('SELECT 1 FROM cic_remote WHERE card_id=?', (card_id,)).fetchone() is None:
+            remote = c.execute('SELECT original_json, corrected_json FROM cic_remote WHERE card_id=?', (card_id,)).fetchone()
+            if remote is None:
                 raise ValueError('This is not a Microsoft intake card.')
-            c.execute('DELETE FROM cic_lines WHERE card_id=?', (card_id,))
+            previous = {}
+            if remote['corrected_json']:
+                previous = json.loads(remote['corrected_json'])
+            elif profile is not None:
+                previous = decode_answers(json.loads(remote['original_json']),profile)
+            preserved = set()
+            old_counts = json.loads(card['assessment_json'])
+            old_issues = json.loads(card['intake_issues_json'])
+            prefixes = []
+            for group,family,label in QUESTIONS:
+                family_field = group.split('.')[0]+'.has_items'
+                fields = (family_field,group+'.has_item',group+'.count',group+'.sizes')
+                if all(previous.get(field,'').strip() == answers[field].strip() for field in fields):
+                    preserved.add(group)
+                    prefixes.append(f'{family} {label}:')
+                    if group in old_counts:
+                        parsed['assessment'][group] = old_counts[group]
+            prefixes = tuple(prefixes)
+            issues = [issue for issue in issues if not issue.startswith(prefixes)]
+            issues.extend(issue for issue in old_issues if issue.startswith(prefixes))
+            retained = [line for line in card['lines'] if line['group_key'] in preserved]
+            replacements = [line for line in parsed['lines'] if line['group'] not in preserved]
+            if len(retained)+len(replacements)>100 or sum(line['quantity'] for line in retained+replacements)>500:
+                raise ValueError('Reduce the card to at most 100 size lines and 500 items.')
+            c.executemany('DELETE FROM cic_lines WHERE card_id=? AND line_id=?',
+                          [(card_id,line['line_id']) for line in card['lines'] if line['group_key'] not in preserved])
             c.executemany('INSERT INTO cic_lines(card_id,item_no,entered_name,entered_size,quantity,group_key) VALUES(?,?,?,?,?,?)',
-                          [(card_id, l['item_no'], l['name'], l['size'], l['quantity'], l['group']) for l in parsed['lines']])
+                          [(card_id, l['item_no'], l['name'], l['size'], l['quantity'], l['group']) for l in replacements])
             c.execute("UPDATE cic_cards SET cadet_name=?,cadet_email=?,assessment_json=?,intake_issues_json=?,version=version+1 WHERE card_id=?",
                       (parsed['name'], parsed['email'], json.dumps(parsed['assessment']), json.dumps(issues), card_id))
             c.execute('UPDATE cic_remote SET corrected_json=? WHERE card_id=?', (json.dumps(answers), card_id))
+            self._link_microsoft_cadet(c, card_id, parsed['name'], parsed['email'], actor)
             self._cic_revalidate(c, card_id)
             self._cic_event(c, card_id, 'Microsoft answers corrected', actor, 'Local correction retained alongside original submission. Inventory unchanged.')
             c.commit()

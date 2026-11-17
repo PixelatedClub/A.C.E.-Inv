@@ -31,6 +31,7 @@ from .config import (
 )
 from .services import InventoryError, InventoryService, ONE_SIZE_VARIANT, REPORT_COLUMN_LABELS
 from .loan_ui import LoanUiMixin
+from .graduation import graduation_dates
 from .layout import ResizableSplit
 from .defaults import ITEM_NAME_ALIASES, ITEM_TYPE_ALIASES
 from .image_utils import read_gif_frame_durations
@@ -434,7 +435,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcod
         self.admin_code_var = tk.StringVar()
         self.admin_code_visible_var = tk.BooleanVar(value=False)
         self.admin_code_toggle_text_var = tk.StringVar(value="Show")
-        self.admin_summary_var = tk.StringVar(value="Cadre code Det005 always signs in as CADRE.")
+        self.admin_summary_var = tk.StringVar()
         self.admin_sort_var = tk.StringVar(value="ID")
 
     def _build_layout(self) -> None:
@@ -1192,6 +1193,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcod
         ttk.Button(cadet_actions, text="Load Into Checkout", command=self._load_selected_cadet_into_checkout).grid(row=0, column=3, padx=(0, 6))
         ttk.Button(cadet_actions, text="Export Cadet History", command=self._export_selected_cadet_history).grid(row=0, column=4, padx=(0, 6))
         ttk.Button(cadet_actions, text="Delete Cadet", command=self._delete_selected_cadet).grid(row=0, column=5)
+        ttk.Button(cadet_actions, text="Graduation…", command=self._open_graduation).grid(row=1, column=5, sticky="e", pady=(6, 0))
 
         self.cadets_split = ResizableSplit(self.cadets_tab,fraction=0.35)
         self.cadets_split.grid(row=1,column=0,columnspan=2,sticky='nsew')
@@ -1748,8 +1750,8 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcod
         )
         self.admin_tree.grid(row=0, column=0, sticky="nsew")
         self.admin_tree.bind("<<TreeviewSelect>>", self._on_admin_selected)
-        ttk.Label(security_frame, textvariable=self.admin_summary_var, wraplength=1180).grid(
-            row=3, column=0, columnspan=5, sticky="w", pady=(8, 0)
+        ttk.Label(security_frame, textvariable=self.admin_summary_var, wraplength=660).grid(
+            row=4, column=0, columnspan=5, sticky="w", pady=(8, 0)
         )
 
         transfer_frame = ttk.LabelFrame(settings_body, text="Transfer Device", padding=12)
@@ -2824,9 +2826,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcod
                 self._load_selected_admin_code_if_authorized(show_error=False)
         active_count = sum(1 for row in rows if str(row.get("is_active", 1)) in {"1", "True", "true"} and str(row["admin_id"]) != "MASTER")
         if self.selected_admin_id is None or str(self.selected_admin_id) not in self.admin_cache:
-            self.admin_summary_var.set(
-            f"Cadre code Det005 signs in as CADRE. {active_count} custom admin code(s) are currently active."
-            )
+            self.admin_summary_var.set(f"Active custom admin codes: {active_count}.")
 
     def _sort_cadet_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sort_mode = self.cadet_sort_var.get().strip() or "ID"
@@ -3102,6 +3102,7 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcod
         self.lift()
         self.after(100, self._focus_checkout_scan)
         self.after(1000, self._check_loan_reminders)
+        self.after(1500, self._check_graduation_cleanup)
 
     def _prompt_for_backup_location(self) -> None:
         dialog = tk.Toplevel(self)
@@ -3614,11 +3615,11 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcod
         if selected_key == "MASTER":
             if self._current_admin_is_cadre():
                 self.admin_summary_var.set(
-                "Cadre code Det005 signs in as CADRE. It is permanent and cannot be edited or deactivated."
+                "The CADRE account is built in."
                 )
             else:
                 self.admin_summary_var.set(
-                "Cadre code Det005 signs in as CADRE. Only a CADRE session can reveal stored admin codes."
+                "Sign in as CADRE to view stored admin codes."
                 )
         else:
             base_summary = f"Selected admin: {row['role']} {row['display_name']}."
@@ -3845,6 +3846,109 @@ class InventoryApp(CicUiMixin, CheckoutDraftMixin, ReturnDraftMixin, IndexBarcod
             except (TypeError, ValueError):
                 continue
         return transaction_ids
+
+    def _open_graduation(self) -> None:
+        cadet_id = self.selected_cadet_id
+        if not cadet_id:
+            self._show_error("Select a saved cadet first.")
+            return
+        cadet = self.service.get_cadet_details(cadet_id)["cadet"]
+        schedule = self.service.get_graduation(cadet_id)
+        if schedule and schedule["completed_at"]:
+            messagebox.showinfo(
+                "Graduation cleanup",
+                f"{cadet['full_name']} graduated on {schedule['graduation_date']}.\n"
+                f"A.C.E. deleted {schedule['transactions_deleted']} transaction records and "
+                f"recorded {schedule['units_acquired']} permanently issued units.",
+                parent=self,
+            )
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Cadet Graduation")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=cadet["full_name"], style="Title.TLabel").pack(anchor="w")
+        ttk.Label(body, text="Graduation date (YYYY-MM-DD)").pack(anchor="w", pady=(12, 2))
+        entered = tk.StringVar(value=schedule["graduation_date"] if schedule else date.today().isoformat())
+        date_entry = ttk.Entry(body, textvariable=entered, width=22)
+        date_entry.pack(anchor="w")
+        graduated = tk.BooleanVar(value=bool(schedule and schedule["graduation_date"] < date.today().isoformat()))
+        ttk.Radiobutton(body, text="Expected to graduate", variable=graduated, value=False).pack(anchor="w", pady=(8, 0))
+        ttk.Radiobutton(body, text="Already graduated", variable=graduated, value=True).pack(anchor="w")
+        if schedule:
+            ttk.Label(body, text=f"Current cleanup date: {schedule['cleanup_date']}").pack(anchor="w", pady=(8, 0))
+        ttk.Label(
+            body,
+            text="A.C.E. keeps transaction history for one year after graduation. "
+                 "Cleanup permanently issues items still checked out and deletes transaction history from the working database.",
+            wraplength=450,
+        ).pack(anchor="w", pady=(12, 8))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x")
+
+        def approve():
+            try:
+                graduation_date, cleanup = graduation_dates(entered.get(), already_graduated=graduated.get())
+            except InventoryError as exc:
+                messagebox.showerror("Graduation date", str(exc), parent=dialog)
+                return
+            question = "Has this cadet graduated" if graduated.get() else "Is this cadet expected to graduate"
+            timing = "Cleanup is already due and will run now." if cleanup <= date.today() else (
+                f"Cleanup will run on {cleanup.isoformat()} or the next time A.C.E. is open."
+            )
+            if not messagebox.askyesno(
+                "Approve graduation",
+                f"{question} on {graduation_date.isoformat()}?\n\n"
+                f"{timing}\nThis permanently deletes transaction history from the working database.",
+                parent=dialog,
+            ):
+                return
+            self._run_action(
+                lambda: self.service.save_graduation(
+                    cadet_id=cadet_id, graduation_date=entered.get(),
+                    already_graduated=graduated.get(), approved_by=self.current_admin,
+                ),
+                success_message=None,
+                on_success=lambda _: finish(),
+            )
+
+        def finish():
+            dialog.destroy()
+            self._run_graduation_cleanup()
+            self._load_cadet_details(cadet_id)
+
+        def cancel():
+            if messagebox.askyesno("Cancel graduation", "Cancel the pending cleanup?", parent=dialog):
+                self._run_action(
+                    lambda: self.service.cancel_graduation(cadet_id=cadet_id, approved_by=self.current_admin),
+                    success_message=None,
+                    on_success=lambda _: finish(),
+                )
+
+        ttk.Button(buttons, text="Approve Schedule", command=approve).pack(side="right")
+        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="right", padx=6)
+        if schedule:
+            ttk.Button(buttons, text="Cancel Schedule", command=cancel).pack(side="left")
+        dialog.grab_set()
+        date_entry.focus_set()
+
+    def _run_graduation_cleanup(self) -> None:
+        completed, failures = self.service.process_due_graduations()
+        if completed:
+            self.refresh_all_views()
+            archived = sum(row["transactions_deleted"] for row in completed)
+            self._show_info(f"Graduation cleanup deleted {archived} transaction records for {len(completed)} cadet(s).")
+        for failure in failures:
+            self._show_error(f"Graduation cleanup postponed. {failure}")
+
+    def _check_graduation_cleanup(self) -> None:
+        try:
+            self._run_action(self._run_graduation_cleanup, success_message=None)
+        finally:
+            self.after(3600000, self._check_graduation_cleanup)
 
     def _mark_selected_cadet_items_acquired(self) -> None:
         if not self.selected_cadet_id:

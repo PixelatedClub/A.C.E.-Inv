@@ -39,12 +39,19 @@ class MicrosoftCicTests(unittest.TestCase):
         path.write_text(json.dumps(self.envelope()),encoding='utf-8');before=path.read_bytes();ops=self.operational()
         reader=InboxReader(self.service,folder,self.profile,'local-test-secret')
         cards,errors=reader.poll();self.assertEqual(errors,[]);self.assertEqual(len(cards),1)
-        self.assertEqual(cards[0]['status'],'Pending');self.assertEqual(ops,self.operational());self.assertEqual(before,path.read_bytes())
+        self.assertEqual(cards[0]['status'], 'Pending')
+        current = self.operational()
+        self.assertEqual(len(current['cadets']), 1)
+        self.assertEqual(current['cadets'][0][0], cards[0]['cadet_id'])
+        self.assertEqual({k: v for k, v in ops.items() if k != 'cadets'},
+                         {k: v for k, v in current.items() if k != 'cadets'})
+        self.assertEqual(before,path.read_bytes())
         self.assertEqual(reader.poll(),([],[]))
         reader=InboxReader(self.service,folder,self.profile,'local-test-secret')
         self.assertEqual(reader.poll(),([],[]))
-        preview=self.service.preview_cic(cards[0]['card_id'],create_new=True)
-        self.service.approve_cic(cards[0]['card_id'],create_new=True,approved_by=ADMIN,review_token=preview['review_token'])
+        self.assertEqual(current, self.operational())
+        preview=self.service.preview_cic(cards[0]['card_id'],cadet_id=cards[0]['cadet_id'])
+        self.service.approve_cic(cards[0]['card_id'],cadet_id=cards[0]['cadet_id'],approved_by=ADMIN,review_token=preview['review_token'])
         self.assertEqual(before,path.read_bytes())
         with self.service.database.connect() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM transactions').fetchone()[0],2)
     def test_bad_counts_held_and_staff_correction_preserves_original(self):
@@ -99,6 +106,46 @@ class MicrosoftCicTests(unittest.TestCase):
         self.assertEqual(card['status'],'Held')
         answers.update(first_name='Jane',last_name='Example',email='jane@example.invalid')
         parsed,issues=parse_answers(answers,self.service.cic_catalog());self.assertEqual(issues,[]);self.assertTrue(parsed['no_items'])
+    def test_blues_belt_defaults_to_two_components(self):
+        catalog = [
+            {'item_no': 'LOCAL-BLUES-BELT-SIZEUNSPECIFIED', 'name': 'Blues Belt', 'size': 'SIZE UNSPECIFIED', 'group': 'blues.belt'},
+            {'item_no': '1', 'name': 'BUCKLE, BELT', 'size': 'N/A-BUCKLE', 'group': 'blues.belt'},
+        ]
+        answers = dict(self.answers)
+        answers.update({key+'.count': '0' for key, _, _ in QUESTIONS})
+        answers.update({key+'.sizes': '' for key, _, _ in QUESTIONS})
+        answers.update({'blues.belt.count': '1', 'blues.belt.sizes': 'N/A'})
+        parsed, issues = parse_answers(answers, catalog)
+        self.assertEqual(issues, [])
+        self.assertEqual(parsed['assessment']['blues.belt'], 2)
+        self.assertEqual(parsed['name'], 'Example, Jane')
+        self.assertEqual([(r['item_no'], r['quantity']) for r in parsed['lines']],
+                         [('LOCAL-BLUES-BELT-SIZEUNSPECIFIED', 1), ('1', 1)])
+        answers['blues.belt.sizes'] = '1 | N/A-BUCKLE | 1'
+        parsed, issues = parse_answers(answers, catalog)
+        self.assertEqual(issues, [])
+        self.assertEqual([r['item_no'] for r in parsed['lines']], ['1'])
+
+    def test_form_edit_keeps_staff_mapping_in_unchanged_group(self):
+        group = self.cat['group']
+        answers = dict(self.answers)
+        answers[group+'.sizes'] = 'Staff will identify this item'
+        card,_ = self.service.import_microsoft_cic(self.envelope(answers),self.profile,secret='secret')
+        line_id = card['lines'][0]['line_id']
+        self.service.map_cic_line(card['card_id'],line_id,self.cat['item_no'],approved_by=ADMIN)
+        mapped = self.service.get_cic(card['card_id'])
+        self.assertEqual(mapped['status'],'Pending')
+        answers['middle_initial'] = 'Q'
+        edited = self.service.correct_microsoft_cic(card['card_id'],answers,approved_by=ADMIN,
+            expected_version=mapped['version'],profile=self.profile)
+        self.assertEqual(edited['status'],'Pending')
+        self.assertEqual(edited['lines'],mapped['lines'])
+        answers[group+'.count'] = '3'
+        answers[group+'.sizes'] = f"{self.cat['item_no']} | {self.cat['size']} | 3"
+        changed = self.service.correct_microsoft_cic(card['card_id'],answers,approved_by=ADMIN,
+            expected_version=edited['version'],profile=self.profile)
+        self.assertEqual(changed['lines'][0]['quantity'],3)
+
     def test_changed_received_response_cannot_overwrite_card(self):
         card,_=self.service.import_microsoft_cic(self.envelope(),self.profile,secret='secret')
         changed=self.envelope();changed['answers']=dict(self.answers,email='changed@example.invalid')

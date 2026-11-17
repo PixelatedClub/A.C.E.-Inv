@@ -44,6 +44,25 @@ def name_key(name):
     parts=[norm(p) for p in name.split(',')]
     return (parts[0],parts[-1]) if len(parts)>1 else (norm(name),'')
 
+def _remaining_line_issues(card, line):
+    from .cic_matching import row_quantity
+    from .cic_questions import QUESTIONS
+    issues = json.loads(card['intake_issues_json'])
+    label = next((f'{family} {name}: ' for key, family, name in QUESTIONS if key == line['group_key']), '')
+    if not label:
+        return issues
+    for index, issue in enumerate(issues):
+        if not issue.startswith(label):
+            continue
+        message = issue[len(label):].removeprefix('could not match ')
+        if not message.startswith('"'):
+            continue
+        entered, separator, explanation = message[1:].partition('"')
+        if separator and explanation.startswith(('.', ' matches multiple items.', ' needs a size or fit detail.')):
+            if norm(row_quantity(entered)[0]) == norm(line['entered_name']):
+                del issues[index]
+                break
+    return issues
 
 class CicServiceMixin:
     def cic_catalog(self):
@@ -139,17 +158,34 @@ class CicServiceMixin:
         return [dict(r,match_reason='Exact email' if norm(r['email'])==norm(card['cadet_email']) else 'Same first and last name')
                 for r in self.list_cadets() if norm(r['email'])==norm(card['cadet_email']) or name_key(r['full_name'])==key]
 
-    def map_cic_line(self,card_id,line_id,item_no,*,approved_by):
+    def cic_line_suggestions(self,card_id,line_id):
+        from .cic_matching import match_human
+        card = self.get_cic(card_id)
+        line = next((r for r in card['lines'] if r['line_id'] == line_id), None)
+        if line is None:
+            fail('Line does not belong to this card.')
+        catalog = self.cic_catalog()
+        text = line['entered_name']
+        if norm(line['entered_size']) != norm(text):
+            text += ' ' + line['entered_size']
+        group = line['group_key']
+        return match_human(text,group,catalog) or match_human(text,group,catalog,suggest_incomplete=True)
+
+    def map_cic_line(self,card_id,line_id,item_no,*,approved_by,expected_version=None):
         actor=self._normalize_admin_identity(approved_by)['label']
         with closing(self.database.connect()) as c:
             c.execute('BEGIN IMMEDIATE');card=self._cic_card(c,card_id)
             if card['status'] not in ('Held','Pending'):fail('Only pending or held cards can be corrected.')
-            if not any(r['line_id']==line_id for r in card['lines']):fail('Line does not belong to this card.')
+            if expected_version is not None and card['version'] != expected_version:
+                fail('This card changed. Reopen it before mapping an item.')
+            line = next((r for r in card['lines'] if r['line_id']==line_id), None)
+            if line is None:fail('Line does not belong to this card.')
             cat=self._cic_catalog(c).get(item_key(item_no))
             if cat is None:fail('Choose an existing visible ACE catalog item.')
             c.execute('UPDATE cic_lines SET item_no=?,entered_name=?,entered_size=? WHERE card_id=? AND line_id=?',
                       (cat['item_no'],cat['item_name'],cat['size'],card_id,line_id))
-            c.execute('UPDATE cic_cards SET version=version+1 WHERE card_id=?',(card_id,))
+            c.execute('UPDATE cic_cards SET intake_issues_json=?,version=version+1 WHERE card_id=?',
+                      (json.dumps(_remaining_line_issues(card,line)),card_id))
             self._cic_revalidate(c,card_id)
             self._cic_event(c,card_id,'Line mapped',actor,f"Line {line_id} confirmed as {cat['item_no']}: {cat['item_name']} / {cat['size']}")
             c.commit()
@@ -159,6 +195,57 @@ class CicServiceMixin:
         with closing(self.database.connect()) as c:
             c.execute('BEGIN IMMEDIATE');self._cic_revalidate(c,card_id);c.commit()
         return self.get_cic(card_id)
+
+    def approve_cic_local_item(self, card_id, line_id, *, name, size, category, subcategory, sex, uom,
+                               expected_version, approved_by):
+        from .cic_matching import canonical, match_human
+        from .cic_questions import question_for
+        actor = self._normalize_admin_identity(approved_by)['label']
+        name, size, category, subcategory = (' '.join(str(value).split()) for value in (name, size, category, subcategory))
+        sex, uom = sex.strip().upper(), uom.strip().upper()
+        if not all((name, size, category, subcategory)) or len(name) > 200 or any(len(v) > 100 for v in (size, category, subcategory)):
+            fail('Enter a specific item name, size, category and subcategory. Use ONE SIZE for unsized items.')
+        if sex not in ('', 'M', 'F', 'U') or uom not in ('EA', 'PR', 'SET'):
+            fail('Select a valid fit and unit of measure.')
+        if any(value in ('n/a', 'none', 'unknown', '?', '-') for value in (norm(name), norm(size))):
+            fail('Confirm the item name and size before creating it.')
+        item = dict(item_name=name, size=size, category=category, subcategory=subcategory, sex=sex)
+        with closing(self.database.connect()) as c:
+            c.execute('BEGIN IMMEDIATE')
+            card = self._cic_card(c, card_id)
+            if card['status'] not in ('Pending', 'Held') or card['version'] != expected_version:
+                fail('This card changed. Reopen it before creating a local item.')
+            line = next((r for r in card['lines'] if r['line_id'] == line_id), None)
+            if line is None or not line['problem']:
+                fail('Select an unresolved line from this card.')
+            group = line['group_key'] or question_for(item)
+            if question_for(item) != group:
+                fail('The name and category must identify the same uniform and item type as the selected line.')
+            catalog = self._cic_catalog(c)
+            candidates = [dict(r, name=r['item_name'], group=question_for(r)) for r in catalog.values()]
+            if match_human(line['entered_name'], group, candidates):
+                fail('The submitted line has existing catalog candidates. Use Map Selected Line to choose the correct one.')
+            for existing in c.execute('SELECT * FROM wings_catalog'):
+                if (question_for(dict(existing)) == group and canonical(existing['size']) == canonical(size)
+                        and existing['sex'].upper() in (sex, '', 'U')
+                        and canonical(existing['item_name']) == canonical(name)):
+                    fail(f"Catalog item {existing['item_no']} already has this name and size. Review it before creating another.")
+            identity = json.dumps([norm(name), canonical(size), norm(category), norm(subcategory), sex], ensure_ascii=False)
+            item_no = 'LOCAL-CIC-' + hashlib.sha256(identity.encode()).hexdigest()[:16].upper()
+            if c.execute('SELECT 1 FROM wings_catalog WHERE item_no=?', (item_no,)).fetchone():
+                fail(f'Local item {item_no} already exists. Map the line to it instead.')
+            c.execute('''INSERT INTO wings_catalog(item_no,item_name,size,category,subcategory,sex,uom,source,is_wings)
+                         VALUES(?,?,?,?,?,?,?, ?,0)''',
+                      (item_no,name,size,category,subcategory,sex,uom,f'CIC {card_id}, staff confirmed'))
+            c.execute('UPDATE cic_lines SET item_no=?,entered_name=?,entered_size=? WHERE card_id=? AND line_id=?',
+                      (item_no,name,size,card_id,line_id))
+            c.execute('UPDATE cic_cards SET intake_issues_json=?,version=version+1 WHERE card_id=?',
+                      (json.dumps(_remaining_line_issues(card,line)),card_id))
+            self._cic_revalidate(c,card_id)
+            self._cic_event(c,card_id,'Local item approved',actor,f'Line {line_id} mapped to {item_no}: {name} / {size}')
+            c.commit()
+        self.database.note_write()
+        return item_no
 
     def _cic_identity(self,c,card,cadet_id,create_new):
         email=c.execute('SELECT * FROM cadets WHERE lower(email)=lower(?)',(card['cadet_email'],)).fetchone()
@@ -204,7 +291,12 @@ class CicServiceMixin:
         self.revalidate_cic(card_id)
         with closing(self.database.connect()) as c:
             card=self._cic_card(c,card_id)
-            if card['status']!='Pending':fail('Only a valid pending card can be approved.')
+            if card['status']=='Held':
+                reasons = json.loads(card['intake_issues_json'])
+                reasons.extend(f"{line['entered_name']} / {line['entered_size']} × {line['quantity']}: {line['problem']}"
+                               for line in card['lines'] if line['problem'])
+                fail('This card is on hold. Resolve these issues before approval:\n\n'+'\n'.join(reasons))
+            if card['status']!='Pending':fail(f"This card is already {card['status'].lower()}.")
             cadet=self._cic_identity(c,card,cadet_id,create_new)
             plan=self._cic_plan(c,card,cadet)
             # Optimistic review guard: re-preview if holdings, mapping or identity changes.
